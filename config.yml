@@ -1,0 +1,95 @@
+# =============================================================================
+# FitnessPro 配置文件
+# 敏感信息（API Key、JWT 密钥、数据库密码）放在 .env 中，这里只引用环境变量名。
+# =============================================================================
+
+timezone: "Asia/Shanghai"
+cors_origins:
+  - "http://localhost:5173"
+
+# 相对路径以项目根目录为基准；可用环境变量 DATABASE_URL 覆盖
+# PostgreSQL 示例：postgresql+asyncpg://user:pass@localhost:5432/fitnesspro
+database:
+  url: "sqlite+aiosqlite:///data/fitnesspro.db"
+
+# -----------------------------------------------------------------------------
+# LLM：fast 用于摘要、记忆提取、翻译等辅助任务；normal 用于 Agent 主循环
+# -----------------------------------------------------------------------------
+llm:
+  fast:
+    model: "deepseek-flash"
+    base_url: "https://api.deepseek.com"
+    api_key_env: "FAST_LLM_API_KEY"
+    temperature: 0.3
+    max_tokens: 8192
+    timeout: 120
+  normal:
+    model: "deepseek-v4-pro"
+    base_url: "https://api.deepseek.com"
+    api_key_env: "LLM_API_KEY"
+    temperature: 0.7
+    max_tokens: 8192
+    timeout: 120
+
+# -----------------------------------------------------------------------------
+# Embedding：默认走 OpenAI 兼容的 Embedding API（SiliconFlow 上的 bge-m3，中英双语）
+# provider=local 时使用 sentence-transformers 本地推理
+# 更换模型后必须重新运行入库脚本（索引会校验模型名）
+# -----------------------------------------------------------------------------
+embedding:
+  provider: "openai"
+  model: "BAAI/bge-m3"
+  base_url: "https://api.siliconflow.cn/v1"
+  api_key_env: "EMBEDDING_API_KEY"
+  batch_size: 16
+  query_instruction: ""
+
+reranker:
+  enabled: false
+  model: "BAAI/bge-reranker-v2-m3"
+  base_url: "https://api.siliconflow.cn/v1/rerank"
+  api_key_env: "RERANKER_API_KEY"
+  candidates: 20
+
+retrieval:
+  dense_top_k: 30
+  sparse_top_k: 30
+  rrf_k: 60
+  default_top_k: 6
+
+# -----------------------------------------------------------------------------
+# 上下文（单位：估算 token）
+# -----------------------------------------------------------------------------
+context:
+  history_token_budget: 8000      # 原文历史上限；超过时先同步压缩再回答
+  compress_trigger_tokens: 6000   # 回答后后台压缩的触发阈值
+  compress_target_ratio: 0.5      # 压缩后原文历史目标 = budget * ratio
+  min_recent_turns: 2             # 压缩时至少保留的最近轮数
+  history_tool_result_tokens: 400 # 历史中每条工具结果的截断长度
+  tool_result_max_tokens: 2500    # 当前轮工具结果的截断长度
+  summary_max_tokens: 800
+  memory_prompt_tokens: 1200
+
+memory:
+  auto_extract: true
+  temporary_ttl_days: 7
+  max_active_in_prompt: 30
+  max_candidates_in_prompt: 8
+  candidate_window_days: 14
+
+agent:
+  max_iterations: 8
+  tool_timeout: 30
+  total_timeout: 240
+
+data:
+  exercises_url: "https://raw.githubusercontent.com/yuhonas/free-exercise-db/main/dist/exercises.json"
+  image_base_url: "https://raw.githubusercontent.com/yuhonas/free-exercise-db/main/exercises/"
+  raw_path: "data/raw/exercises.json"
+  translation_cache_path: "data/exercises_zh.json"
+  index_dir: "data/index"
+
+auth:
+  jwt_secret_env: "JWT_SECRET"
+  jwt_algorithm: "HS256"
+  access_token_minutes: 10080

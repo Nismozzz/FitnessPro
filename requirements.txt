@@ -1,0 +1,36 @@
+# FitnessPro 后端依赖（Python >= 3.12）
+# 安装：pip install -r requirements.txt
+
+# Web
+fastapi>=0.115
+uvicorn[standard]>=0.30
+pydantic>=2.7
+
+# 配置
+pyyaml>=6.0
+python-dotenv>=1.0
+
+# 数据库（默认 SQLite；切换 PostgreSQL 时使用 asyncpg）
+sqlalchemy[asyncio]>=2.0.30
+aiosqlite>=0.20
+asyncpg>=0.29
+
+# 模型调用（OpenAI 兼容接口：DeepSeek / SiliconFlow / 通义等）
+openai>=1.40
+httpx>=0.27
+
+# 检索
+numpy>=1.26
+rank-bm25>=0.2.2
+jieba>=0.42.1
+
+# 认证
+bcrypt>=4.1
+pyjwt>=2.8
+
+# 测试
+pytest>=8.0
+pytest-asyncio>=0.23
+
+# 可选：本地 Embedding（config.yml 中 embedding.provider=local 时需要）
+# sentence-transformers>=3.0

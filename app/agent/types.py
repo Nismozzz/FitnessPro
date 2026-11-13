@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-EventType = Literal["session", "context", "content", "tool_call", "tool_result", "error", "done"]
+EventType = Literal["session", "context", "thinking", "content", "tool_call", "tool_result", "error", "done"]
 
 
 @dataclass

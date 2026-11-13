@@ -29,7 +29,7 @@ def _sse(event: AgentEvent) -> str:
 
 @router.post("/chat")
 async def chat(body: ChatRequest, user_id: str = Depends(get_current_user_id)) -> StreamingResponse:
-    """SSE 流式对话。事件：session / context / content / tool_call / tool_result / error / done。"""
+    """SSE 流式对话。事件：session / context / thinking / content / tool_call / tool_result / error / done。"""
     try:
         session_id = await agent_service.prepare_session(user_id, body.session_id, body.message)
     except SessionNotFound:

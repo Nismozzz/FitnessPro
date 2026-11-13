@@ -167,3 +167,39 @@ async def test_loop_llm_error_ends_with_done():
     assert [e.type for e in events][-2:] == ["error", "done"]
     assert events[-1].data["status"] == "error"
     assert transcript == [{"role": "assistant", "content": "部分"}]
+
+
+async def test_thinking_streamed_but_not_persisted_and_replayed_only_within_turn():
+    first = chunk(tool_calls=[tc(0, "c1", "echo", '{"text":"ok"}')])
+    first.choices[0].delta.reasoning_content = "先检查用户的训练情况"
+    second = chunk("根据你的情况，建议循序训练。")
+    second.choices[0].delta.reasoning_content = "再结合工具结果"
+    llm = FakeLLM([[first], [second]])
+    loop = AgentLoop(llm, ToolExecutor([EchoTool()]), AgentSettings(max_iterations=4))
+    events, transcript = await collect(loop, [{"role": "user", "content": "训练建议"}])
+
+    assert [e.type for e in events] == ["thinking", "tool_call", "tool_result", "thinking", "content", "done"]
+    assert [e.data["delta"] for e in events if e.type == "thinking"] == [
+        "先检查用户的训练情况", "再结合工具结果"
+    ]
+    assert sum(e.type == "done" for e in events) == 1
+    working = llm.calls[1]["messages"]
+    assert working[1]["reasoning_content"] == "先检查用户的训练情况"
+    assert all("reasoning_content" not in m and "thinking" not in m for m in transcript)
+    assert "先检查" not in str(transcript) and "再结合" not in str(transcript)
+
+
+async def test_thinking_only_failure_has_one_terminal_event_and_no_persistence():
+    class BrokenReasoning:
+        async def stream(self, messages, **kw):
+            c = chunk()
+            c.choices[0].delta.reasoning_content = "部分思考"
+            yield c
+            raise RuntimeError("network")
+
+    events, transcript = await collect(
+        AgentLoop(BrokenReasoning(), ToolExecutor([]), AgentSettings()),
+        [{"role": "user", "content": "hi"}],
+    )
+    assert [e.type for e in events] == ["thinking", "error", "done"]
+    assert transcript == []

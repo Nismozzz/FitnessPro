@@ -1,7 +1,6 @@
 # FitnessPro
 
-面向健身人群的 AI 教练 Agent：推荐训练动作、规划每周训练。架构参考 [CookHero](https://github.com/Decade-qiu/CookHero)，
-动作知识库来自 [free-exercise-db](https://github.com/yuhonas/free-exercise-db)（Unlicense，876 个动作）。
+面向健身人群的 AI 教练 Agent：推荐训练动作、规划每周训练。动作知识库来自 [free-exercise-db](https://github.com/yuhonas/free-exercise-db)。
 
 当前阶段完成了：RAG 检索、上下文管理、记忆系统、Agent 循环，以及对应的 HTTP API 和 React 前端。尚未做 Docker 封装。
 
@@ -45,9 +44,13 @@ npm run dev
 
 - 注册 / 登录后可以使用 SSE 流式教练对话、历史会话查看与删除。
 - 动作库支持关键词、肌群、器械筛选，以及动作步骤和示意图详情；需要先完成知识库入库。
-- 训练档案支持目标、水平、身体数据、器械、伤病和备注；记忆管理支持添加、确认、拒绝与删除。
+- 训练档案支持目标、水平、身体数据、器械、伤病和备注；侧栏“我的记忆”按“已确认 / 待确认”分栏，支持添加、确认、忽略、编辑与删除，并展示待确认数量。
+- 模型返回 `reasoning_content` 时，通过 `thinking` SSE 事件实时展示在默认折叠的“思考过程”区域；可手动展开，正文开始输出时自动折叠。思考内容只保留在当前页面，不落库、不进入跨轮历史，刷新或重新打开会话后不会恢复；未返回思考内容的模型不会显示此区域。
+- 收到对话 `done` 后延迟 3 秒刷新一次记忆。后台提取耗时更长时，可在“我的记忆”中手动刷新；登出或切换账号会清除待执行刷新并丢弃旧账号的延迟响应。
 - 首页和主题切换无需登录。对话需要有效的模型配置；前端不会生成模拟回答。
 - “停止接收”仅断开前端连接，后端仍可能完成任务；稍后重新打开会话可查看保存结果。
+
+阶段 0 验证：`pytest`（后端）、`cd frontend && npm test`（SSE 与 DOM 交互测试）、`npm run build`（类型检查与构建）。自动化验收使用伪造模型和真实临时 SQLite，覆盖思考不落库、候选记忆提取 → 编辑 → 确认 → 下一轮提示词生效，以及双用户越权保护；不会调用收费模型。真实模型手动验收：开启支持思考输出的模型，发送“我左膝有旧伤”，展开思考区域观察增量，等待回答结束后进入“我的记忆 → 待确认”，确认候选后继续询问训练建议。后台提取失败或没有提取到事实时不会创建候选。
 
 生产构建：`cd frontend && npm run build`，产物为 `frontend/dist/`。部署时用 Web 服务器托管该目录，并将 `/api/` 反向代理到后端。`npm run preview` 仅用于静态产物预览，需要另行配置 API 代理。
 
@@ -138,7 +141,7 @@ scripts/
 | POST | `/api/v1/auth/register`、`/login` | 获取 JWT |
 | GET/PUT | `/api/v1/users/me/profile` | 画像 |
 | GET/POST/PATCH/DELETE | `/api/v1/memories`、`/{id}/confirm`、`/{id}/reject` | 记忆管理 |
-| POST | `/api/v1/agent/chat` | SSE 对话：session / context / content / tool_call / tool_result / error / done |
+| POST | `/api/v1/agent/chat` | SSE 对话：session / context / thinking / content / tool_call / tool_result / error / done |
 | GET/DELETE | `/api/v1/agent/sessions`、`/{id}/messages` | 会话 |
 | POST | `/api/v1/knowledge/search` | 检索调试（返回两路名次） |
 

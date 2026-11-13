@@ -17,12 +17,12 @@ test('SSE handles split UTF-8, CRLF, tools, errors, and terminal status', async 
   let sent;
   globalThis.fetch = async (url, options) => {
     sent = { url, options };
-    return responseFor('event: session\r\ndata: {"session_id":"s1"}\r\n\r\nevent: content\r\ndata: {"delta":"开始训练"}\r\n\r\nevent: tool_call\r\ndata: {"name":"search_exercises"}\r\n\r\nevent: error\r\ndata: {"message":"超时"}\r\n\r\nevent: done\r\ndata: {"status":"timeout"}');
+    return responseFor('event: session\r\ndata: {"session_id":"s1"}\r\n\r\nevent: thinking\r\ndata: {"delta":"分析训练目标"}\r\n\r\nevent: content\r\ndata: {"delta":"开始训练"}\r\n\r\nevent: tool_call\r\ndata: {"name":"search_exercises"}\r\n\r\nevent: error\r\ndata: {"message":"超时"}\r\n\r\nevent: done\r\ndata: {"status":"timeout"}');
   };
   const events = [];
   await streamChat('训练建议', null, new AbortController().signal, (type, data) => events.push({ type, data }));
-  assert.equal(events[1].data.delta, '开始训练');
-  assert.deepEqual(events.map(e => e.type), ['session', 'content', 'tool_call', 'error', 'done']);
+  assert.equal(events[1].data.delta, '分析训练目标');
+  assert.deepEqual(events.map(e => e.type), ['session', 'thinking', 'content', 'tool_call', 'error', 'done']);
   assert.equal(sent.options.headers.Authorization, 'Bearer test-token');
   assert.deepEqual(JSON.parse(sent.options.body), { message: '训练建议', session_id: null });
 });

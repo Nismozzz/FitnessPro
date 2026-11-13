@@ -97,6 +97,7 @@ class AgentLoop:
                     reasoning = getattr(delta, "reasoning_content", None)
                     if reasoning:
                         reasoning_parts.append(reasoning)
+                        yield AgentEvent("thinking", {"delta": reasoning})
                     if delta.content:
                         content_parts.append(delta.content)
                         yield AgentEvent("content", {"delta": delta.content})

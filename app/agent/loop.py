@@ -15,6 +15,7 @@ Agent 执行循环（Function Calling 风格的 ReAct）。
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -76,16 +77,26 @@ class AgentLoop:
                 yield self._done("timeout", iteration - 1, usage, tool_calls_count)
                 return
 
-            last_round = iteration == self.cfg.max_iterations
+            last_round = (iteration == self.cfg.max_iterations
+                          or remaining <= self.cfg.final_answer_reserve)
             overrides: dict[str, Any] = {"timeout": remaining}
             if tools and last_round:
                 overrides["tool_choice"] = "none"
+
+            request_messages = messages
+            if last_round:
+                request_messages = [*messages, {
+                    "role": "system",
+                    "content": "本轮为收尾回答，不能再调用工具。请根据已有工具结果直接总结；若计划未保存成功，明确说明尚未保存和剩余步骤，不得声称已完成。不要叙述内部推理过程。",
+                }]
 
             content_parts: list[str] = []
             reasoning_parts: list[str] = []
             pending: dict[int, dict[str, str]] = {}
             try:
-                async for chunk in self.llm.stream(messages, tools=tools, **overrides):
+                async for chunk in self._stream_with_deadline(
+                    request_messages, tools, remaining, overrides
+                ):
                     if chunk.usage:
                         usage["prompt_tokens"] += chunk.usage.prompt_tokens or 0
                         usage["completion_tokens"] += chunk.usage.completion_tokens or 0
@@ -97,10 +108,14 @@ class AgentLoop:
                     reasoning = getattr(delta, "reasoning_content", None)
                     if reasoning:
                         reasoning_parts.append(reasoning)
-                        yield AgentEvent("thinking", {"delta": reasoning})
                     if delta.content:
                         content_parts.append(delta.content)
-                        yield AgentEvent("content", {"delta": delta.content})
+                        if not pending:
+                            yield AgentEvent("content", {"delta": delta.content})
+
+                    if delta.tool_calls and not pending:
+                        # 工具调用前的文字不是最终答案，撤回本轮的临时正文。
+                        yield AgentEvent("content_reset", {})
                     for tc in delta.tool_calls or []:
                         index = tc.index if tc.index is not None else len(pending)
                         slot = pending.setdefault(index, {"id": "", "name": "", "arguments": ""})
@@ -114,10 +129,11 @@ class AgentLoop:
             except Exception as exc:
                 logger.exception("LLM 调用失败 session=%s iteration=%d", ctx.session_id, iteration)
                 partial = "".join(content_parts)
-                if partial:
+                if partial and not pending:
                     transcript.append({"role": "assistant", "content": partial})
-                yield AgentEvent("error", {"message": f"模型调用失败：{type(exc).__name__}"})
-                yield self._done("error", iteration, usage, tool_calls_count)
+                timed_out = isinstance(exc, TimeoutError)
+                yield AgentEvent("error", {"message": "本次任务处理超时" if timed_out else f"模型调用失败：{type(exc).__name__}"})
+                yield self._done("timeout" if timed_out else "error", iteration, usage, tool_calls_count)
                 return
 
             content = "".join(content_parts)
@@ -174,7 +190,18 @@ class AgentLoop:
                     "tool_call", {"id": call.id, "name": call.name, "arguments": call.arguments}
                 )
                 started = time.monotonic()
-                result = await self.executor.execute(call, ctx)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    yield AgentEvent("error", {"message": "本次任务处理超时，请查看周训练计划页确认草稿是否已保存"})
+                    yield self._done("timeout", iteration, usage, tool_calls_count)
+                    return
+                try:
+                    async with asyncio.timeout(remaining):
+                        result = await self.executor.execute(call, ctx)
+                except TimeoutError:
+                    yield AgentEvent("error", {"message": "本次任务处理超时，请查看周训练计划页确认草稿是否已保存"})
+                    yield self._done("timeout", iteration, usage, tool_calls_count)
+                    return
                 content_str = result.to_content(self.tool_result_max_tokens)
                 messages.append({"role": "tool", "tool_call_id": call.id, "content": content_str})
                 transcript.append(
@@ -195,6 +222,12 @@ class AgentLoop:
         # for 循环正常结束只可能发生在 max_iterations <= 0 的配置下
         yield AgentEvent("error", {"message": "max_iterations 配置无效"})
         yield self._done("error", 0, usage, tool_calls_count)
+
+    async def _stream_with_deadline(self, messages, tools, remaining, overrides):
+        # SDK timeout 是网络读超时，不是整条流的总时限。
+        async with asyncio.timeout(remaining):
+            async for chunk in self.llm.stream(messages, tools=tools, **overrides):
+                yield chunk
 
     @staticmethod
     def _done(status: str, iterations: int, usage: dict, tool_calls: int) -> AgentEvent:

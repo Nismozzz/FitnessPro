@@ -1,153 +1,211 @@
 # FitnessPro
 
-面向健身人群的 AI 教练 Agent：推荐训练动作、规划每周训练。动作知识库来自 [free-exercise-db](https://github.com/yuhonas/free-exercise-db)。
+面向健身人群的 AI 私人教练。
 
-当前阶段完成了：RAG 检索、上下文管理、记忆系统、Agent 循环，以及对应的 HTTP API 和 React 前端。尚未做 Docker 封装。
+## 1. 项目简介
 
-## 快速开始
+FitnessPro 是一个基于大模型 Agent 的健身助手：用户通过对话描述目标、水平、伤病和训练条件，系统结合动作知识库（RAG）、长期记忆和用户档案，生成可校验的周训练计划，记录训练并给出统计反馈。
 
-```bash
-python3.12 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env            # 填写 LLM_API_KEY / FAST_LLM_API_KEY / EMBEDDING_API_KEY / JWT_SECRET
 
-# 1. 入库（先试跑 20 条，确认翻译和 Embedding 正常后再跑全量）
-python -m scripts.ingest_exercises --limit 20
-python -m scripts.ingest_exercises
-#    没有 Embedding key 时可只用 BM25：--skip-embed；不翻译：--skip-translate
+**技术栈**
 
-# 2. 命令行对话（不需要启动服务）
-python -m scripts.chat_cli
+| 层 | 技术 |
+| --- | --- |
+| 后端 | Python 3.12+、FastAPI、SQLAlchemy 2（异步）、Pydantic 2 |
+| 数据库 | SQLite（默认）/ PostgreSQL（asyncpg） |
+| 模型 | OpenAI 兼容接口（默认 DeepSeek；fast / normal 两档模型） |
+| 检索 | bge-m3 向量 + BM25（jieba 分词）→ RRF 融合 → bge-reranker 重排 |
+| 前端 | React 19、TypeScript、Vite 7、react-markdown |
+| 测试 | pytest + pytest-asyncio；前端 `node --test` |
 
-# 3. 启动 API（文档：http://localhost:8000/docs）
-uvicorn app.main:app --reload
+**目录结构**
 
-# 测试（不需要任何 API key）
-pytest
 ```
-
-## 前端
-
-前端位于 `frontend/`，使用 React + TypeScript + Vite，布局参考本地 CookHero：侧栏会话、欢迎卡片、底部输入区，支持浅色 / 深色主题和移动端。
-
-```bash
-# 终端一：启动后端
-uvicorn app.main:app --reload
-
-# 终端二：启动前端（Node.js 20.19+ 或 22.12+）
-cd frontend
-npm ci
-npm run dev
-```
-
-打开 Vite 输出的本地地址（默认 http://localhost:5173）。开发服务器将 `/api` 代理到 `http://127.0.0.1:8000`，无需额外修改 CORS。
-
-- 注册 / 登录后可以使用 SSE 流式教练对话、历史会话查看与删除。
-- 动作库支持关键词、肌群、器械筛选，以及动作步骤和示意图详情；需要先完成知识库入库。
-- 训练档案支持目标、水平、身体数据、器械、伤病和备注；侧栏“我的记忆”按“已确认 / 待确认”分栏，支持添加、确认、忽略、编辑与删除，并展示待确认数量。
-- 模型返回 `reasoning_content` 时，通过 `thinking` SSE 事件实时展示在默认折叠的“思考过程”区域；可手动展开，正文开始输出时自动折叠。思考内容只保留在当前页面，不落库、不进入跨轮历史，刷新或重新打开会话后不会恢复；未返回思考内容的模型不会显示此区域。
-- 收到对话 `done` 后延迟 3 秒刷新一次记忆。后台提取耗时更长时，可在“我的记忆”中手动刷新；登出或切换账号会清除待执行刷新并丢弃旧账号的延迟响应。
-- 首页和主题切换无需登录。对话需要有效的模型配置；前端不会生成模拟回答。
-- “停止接收”仅断开前端连接，后端仍可能完成任务；稍后重新打开会话可查看保存结果。
-
-阶段 0 验证：`pytest`（后端）、`cd frontend && npm test`（SSE 与 DOM 交互测试）、`npm run build`（类型检查与构建）。自动化验收使用伪造模型和真实临时 SQLite，覆盖思考不落库、候选记忆提取 → 编辑 → 确认 → 下一轮提示词生效，以及双用户越权保护；不会调用收费模型。真实模型手动验收：开启支持思考输出的模型，发送“我左膝有旧伤”，展开思考区域观察增量，等待回答结束后进入“我的记忆 → 待确认”，确认候选后继续询问训练建议。后台提取失败或没有提取到事实时不会创建候选。
-
-生产构建：`cd frontend && npm run build`，产物为 `frontend/dist/`。部署时用 Web 服务器托管该目录，并将 `/api/` 反向代理到后端。`npm run preview` 仅用于静态产物预览，需要另行配置 API 代理。
-
-## 目录结构
-
-```text
 app/
-├── config.py              # config.yml + .env
-├── main.py                # FastAPI 入口
-├── database/              # SQLAlchemy 模型（默认 SQLite，可切换 PostgreSQL）
-├── llm/                   # OpenAI 兼容客户端（fast / normal 两档）、token 估算
-├── rag/                   # 动作知识库
-│   ├── schema.py          #   枚举（中文同义词）、ExerciseDoc、ExerciseFilter
-│   ├── bm25.py            #   jieba + BM25
-│   ├── vector_store.py    #   本地 numpy 向量库（npy + json，无 pickle）
-│   ├── embeddings.py      #   API / 本地 Embedding
-│   ├── reranker.py        #   可选 /rerank 接口
-│   └── retriever.py       #   过滤 → 向量 + BM25 → RRF → 重排
-├── context/               # 上下文：按轮分组、预算选择、滚动摘要
-├── memory/                # 长期记忆：候选 → 确认，自动提取
-├── users/profile.py       # 结构化用户画像
-├── conversation/          # 会话与消息存储
-├── agent/
-│   ├── loop.py            #   ReAct 循环（流式、统一终止协议）
-│   ├── service.py         #   会话锁、后台执行、持久化、后台任务调度
-│   ├── prompts.py         #   系统提示词
-│   └── tools/             #   工具协议 + 8 个工具
-└── api/                   # auth / users / memories / agent(SSE) / knowledge
-scripts/
-├── ingest_exercises.py    # 下载 → 翻译（缓存可续跑）→ 入库 → 建索引
-└── chat_cli.py            # 命令行调试
+  agent/          Agent 主循环、提示词、工具（动作、记忆、档案、计划、时间）
+  api/            HTTP 路由（auth / users / agent / memories / knowledge / training）
+  auth/           密码哈希与 JWT
+  context/        上下文构建、历史分组、滚动摘要压缩
+  conversation/   会话与消息存储
+  database/       ORM 模型与会话管理
+  llm/            模型调用与 token 估算
+  memory/         记忆提取与服务
+  rag/            BM25、向量库、Embedding、重排、混合检索
+  training/       计划 schema、规则校验器、器械预设、训练服务与统计
+  users/          用户档案
+frontend/         React 前端
+scripts/          动作知识库入库、命令行对话
+tests/            后端测试
+config.yml        非敏感配置（模型、检索、上下文、记忆等参数）
+.env              敏感信息（API Key、JWT 密钥），不入库
 ```
 
-## 设计要点
+## 2. 项目功能
 
-### RAG
-- 一条动作 = 一个文档（中位数约 100 词），无需切块。
-- **先结构化过滤，再语义排序**：肌群、器械、难度等由 Agent 通过工具参数（枚举值，支持中文同义词归一化）给出，
-  检索只在候选集合内进行，不需要再调用一次 LLM 抽取过滤条件。
-- 稠密向量（bge-m3，中英双语）+ BM25（jieba）→ RRF 融合 → 可选重排。
-- 入库时用 LLM 生成中文名、别名和中文步骤，检索文本中英双语并带肌群同义词。
-- 降级：向量检索或重排失败时退回 BM25，并在结果的 warnings 中说明；索引会校验 Embedding 模型名。
+### 2.1 智能对话 Agent
+- 工具调用循环（动作检索、动作详情、档案读写、记忆、计划、训练记录与统计、当前时间）。
+- SSE 流式输出，前端打字机效果，并展示模型思考过程。
+- 会话列表、历史消息查看与删除。
 
-### 上下文
-- 每次请求从数据库重建：系统提示词（规则 + 时间 + 画像 + 记忆 + 摘要）+ 近期原文 + 当前消息。
-- 以**轮**为单位处理历史，工具调用与结果不会被拆开；摘要覆盖 `seq < summary_upto_seq`，其余全部以原文进入，没有覆盖缺口。
-- 超过 `history_token_budget` 时先同步压缩；压缩失败则丢弃最早的轮次并**显式告知模型**。
-- 回答后超过 `compress_trigger_tokens` 时后台压缩；同会话压缩串行执行，写回使用版本号乐观锁。
-- 历史工具结果和当前轮工具结果分别按预算截断；中断留下的不完整工具调用会被自动修复。
+### 2.2 动作知识库（RAG）
+- 数据源：free-exercise-db，入库时由 fast 模型生成中文名、别名与动作要点。
+- 检索链路：过滤 → 向量 + BM25 → RRF 融合 → 重排。
+- 提供检索、动作详情、知识库统计接口。
 
-### 记忆
-| 层次 | 存储 | 更新方式 |
-|---|---|---|
-| 工作记忆 | 本次执行的 messages | 工具循环追加 |
-| 会话原文 | `messages` | 每轮保存 |
-| 会话摘要 | `agent_sessions.summary` | 滚动压缩 |
-| 用户画像 | `user_profiles` | API / `update_user_profile` 工具 |
-| 长期事实 | `memories` | 见下 |
+### 2.3 上下文管理
+- 按轮分组历史、token 预算、滚动摘要（乐观锁防并发覆盖）。
+- 超出预算时先同步压缩再回答；回答后按阈值后台压缩。
 
-长期事实带类型、来源、状态、有效期：
-- 自动提取只生成 `candidate`，以“待确认”区块进入提示词，用户确认后才变为 `active`；
-- 新事实否定旧事实时生成 `supersedes` 候选，确认后旧记忆归档；
-- 区分 `long_term` 与 `temporary`（默认 7 天过期）；
-- 用户明确要求“记住”时由 `save_memory` 直接写入 `active`；可通过 API 查看、编辑、删除。
+### 2.4 记忆系统
+- 自动从对话中提取候选记忆，**需用户确认后生效**；也可手动添加、编辑、拒绝、删除。
+- 临时记忆带 TTL；前端提供"待确认记忆"入口。
 
-### Agent
-- 工具参数用 Pydantic 定义，同时生成 JSON Schema 和服务端校验；`user_id` 只来自认证上下文，不出现在模型参数中。
-- JSON 解析失败或校验失败时把错误反馈给模型，不带空参数执行；每个工具有超时，内部异常不泄露细节。
-- 统一终止协议：每次执行以且仅以一个 `done` 结束，`status` 为 completed / max_iterations / timeout / error。
-- 最后一轮强制 `tool_choice="none"` 让模型给出回答；除轮数外还有总时长预算。
-- Agent 在后台任务中运行并通过队列推送 SSE，客户端断开后仍会完成并保存；同会话请求串行。
-- 所有会话、记忆接口都按 user_id 校验归属。
+### 2.5 用户与档案
+- 注册 / 登录（JWT）。
+- 档案：训练目标、水平、每周训练天数、单次时长、伤病、训练场景与可用/不可用器械。
 
-## 工具列表
+### 2.6 周计划与训练记录
+- 计划、计划日、计划动作、训练记录的数据模型；幂等保存（重复调用不产生重复数据）。
+- 计划规则校验器（纯代码）：器械可用性、档案完整性、训练天数、动作是否存在、热身/放松、肌群容量、伤病高风险动作等。
+- 训练场景选择、常见器械预设、不可用器械设置。
+- Agent 工具：`draft_weekly_plan`、`save_plan`、`get_active_plan`、`update_plan_exercise`、`log_workout`、`get_training_stats`。
+- 前端：周视图、训练记录页、训练统计（容量趋势、完成率、个人表现）。
+- 所有资源按用户隔离，已有双用户互访测试。
 
-| 工具 | 说明 | 副作用 |
-|---|---|---|
-| `search_exercises` | 混合检索 + 结构化筛选 | 否 |
-| `get_exercise_detail` | 动作步骤、示意图 | 否 |
-| `get_user_profile` / `update_user_profile` | 读写画像 | 写 |
-| `save_memory` / `confirm_memory` / `forget_memory` | 长期记忆 | 写 |
-| `get_current_time` | 当前日期与本周日期 | 否 |
+### 2.7 API 概览
+所有接口前缀为 `/api/v1`，交互式文档见 `http://127.0.0.1:8000/docs`。
 
-## API
+| 模块 | 路径 |
+| --- | --- |
+| 认证 | `POST /auth/register`、`POST /auth/login` |
+| 用户 | `GET /users/me`、`GET/PUT /users/me/profile` |
+| Agent | `POST /agent/chat`（SSE）、`GET /agent/sessions`、`GET /agent/sessions/{id}/messages`、`DELETE /agent/sessions/{id}` |
+| 记忆 | `GET/POST /memories`、`POST /memories/{id}/confirm`、`POST /memories/{id}/reject`、`PATCH/DELETE /memories/{id}` |
+| 知识库 | `POST /knowledge/search`、`GET /knowledge/exercises/{id}`、`GET /knowledge/stats` |
+| 计划 | `POST /plans/validate`、`GET/POST /plans`、`GET /plans/active`、`GET /plans/{id}`、`POST /plans/{id}/activate`、`PATCH /plans/{id}/exercises` |
+| 训练记录 | `GET/POST /logs`、`GET /logs/{id}`、`GET /stats/weekly` |
+| 健康检查 | `GET /health` |
 
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| POST | `/api/v1/auth/register`、`/login` | 获取 JWT |
-| GET/PUT | `/api/v1/users/me/profile` | 画像 |
-| GET/POST/PATCH/DELETE | `/api/v1/memories`、`/{id}/confirm`、`/{id}/reject` | 记忆管理 |
-| POST | `/api/v1/agent/chat` | SSE 对话：session / context / thinking / content / tool_call / tool_result / error / done |
-| GET/DELETE | `/api/v1/agent/sessions`、`/{id}/messages` | 会话 |
-| POST | `/api/v1/knowledge/search` | 检索调试（返回两路名次） |
+## 3. 启动说明
 
-## 已知限制 / 后续计划
+### 3.1 环境要求
+- Python >= 3.12
+- Node.js（建议 20+）与 npm
+- 可用的 LLM / Embedding / Reranker API Key（默认 DeepSeek 与 SiliconFlow）
 
-- 后台任务为进程内任务，进程重启后未完成的摘要和记忆提取会丢失；需要时改为持久化任务队列。
-- 会话锁为进程内锁，多进程部署需要换成分布式锁。
-- token 为估算值；表结构由 `create_all` 创建，正式环境应引入 Alembic。
-- 下一步：训练计划工具（生成 + 规则校验）、训练记录与统计、检索评测集、Docker 化。
+### 3.2 后端
+
+```bash
+# 1) 创建虚拟环境并安装依赖
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+# 2) 配置密钥
+cp .env.example .env
+# 编辑 .env：LLM_API_KEY、FAST_LLM_API_KEY、EMBEDDING_API_KEY、RERANKER_API_KEY、JWT_SECRET
+# JWT_SECRET 生成：python -c "import secrets; print(secrets.token_urlsafe(48))"
+
+# 3) 导入动作知识库（首次必须执行，需要联网）
+python -m scripts.ingest_exercises
+# 可选：先试跑 python -m scripts.ingest_exercises --limit 20
+# 可选：仅英文 + BM25 python -m scripts.ingest_exercises --skip-translate --skip-embed
+
+# 4) 启动服务（默认 http://127.0.0.1:8000）
+uvicorn app.main:app --reload
+```
+
+> 更换 Embedding 模型后必须重新运行入库脚本（索引会校验模型名）。
+
+### 3.3 前端
+
+```bash
+cd frontend
+npm install
+npm run dev        # http://localhost:5173，/api 自动代理到 127.0.0.1:8000
+npm run build      # 生产构建
+```
+
+### 3.4 命令行调试（可选）
+无需启动 HTTP 服务：
+
+```bash
+python -m scripts.chat_cli     # 命令：/new 新会话  /profile 查看画像  /mem 查看记忆  /quit 退出
+```
+
+### 3.5 配置说明
+- [config.yml](config.yml)：时区、CORS、数据库、模型、检索、上下文、记忆、Agent 超时等非敏感参数。
+- 切换 PostgreSQL：设置环境变量 `DATABASE_URL=postgresql+asyncpg://user:pass@localhost:5432/fitnesspro`。
+- 本地 Embedding：将 `embedding.provider` 设为 `local`，并安装 `sentence-transformers`。
+
+### 3.6 测试
+
+```bash
+pytest                      # 后端（项目根目录）
+cd frontend && npm test     # 前端
+```
+
+## 4. TodoList
+后台任务为进程内任务，进程重启后未完成的摘要和记忆提取会丢失；需要时改为持久化任务队列。
+会话锁为进程内锁，多进程部署需要换成分布式锁。
+token 为估算值；表结构由 create_all 创建，正式环境应引入 Alembic。
+
+### 基础能力
+- [x] RAG 搭建，第一版知识库入库成功（过滤 → 向量 + BM25 → RRF → 重排）
+- [x] 上下文机制搭建（按轮分组、token 预算、滚动摘要 + 乐观锁）
+- [x] 前端可视化（SSE 流式输出，打字机效果已具备）
+- [x] 记忆系统（自动提取为候选，需用户确认后生效；可手动添加）
+- [x] API（auth / profile / memories / agent / knowledge）
+
+### 阶段 0：快速改进
+- [x] 展示模型思考过程（"边想边生成"）
+- [x] 前端增加"待确认记忆"入口
+
+### 阶段 1：周计划与训练记录
+- [x] 计划、计划日、计划动作、训练记录的数据表
+- [x] 计划规则校验器（纯代码）
+- [x] 训练场景选择、常见器械预设与不可用器械设置
+- [x] 计划相关 Agent 工具
+- [x] 训练记录工具与统计
+- [x] 前端：周视图 + 记录页
+- [x] 前端：训练统计与容量趋势、完成率、个人表现
+- [x] 测试
+
+### 阶段 2：根据记录自动调整计划
+- [ ] 渐进超负荷规则
+- [ ] 停滞检测与动作替换
+- [ ] `suggest_next_week` 工具
+
+### 阶段 3：评测
+- [ ] 检索评测集与脚本
+- [ ] Agent 评测集与脚本
+- [ ] 评测结果写入 README / 简历
+
+### 阶段 4：可观测性与 Dashboard
+- [ ] LLM 调用记录落库
+- [ ] 统一 request_id 贯穿请求
+- [ ] 检索与工具调用记录
+- [ ] 前端 Dashboard
+
+### 阶段 5：Docker 部署
+- [ ] 后端 Dockerfile
+- [ ] 前端 Dockerfile（构建后由 Nginx 提供静态文件并反向代理 API）
+- [ ] docker-compose：backend + frontend + PostgreSQL（+ Milvus 可选）
+- [ ] 引入 Alembic 管理表结构
+- [ ] 部署到云服务器
+
+### 阶段 6：联网搜索工具
+- [ ] `web_search` 工具
+- [ ] 结果安全处理
+- [ ] 注入测试用例
+
+### 阶段 7：多 Agent（视评测结果决定）
+- [ ] 根据阶段 3 的评测找出单 Agent 的瓶颈
+- [ ] 按需拆分子 Agent
+
+### 贯穿各阶段：安全与测试
+- [x] 越权：每个新增资源（计划、记录、统计）都写双用户互访测试（阶段 1 已覆盖）
+- [ ] 提示注入：用户输入、检索文档、搜索结果三类来源各有用例
+- [ ] 伤病场景：有伤病的用户不推荐对应高风险动作，回答包含就医提示
+- [x] 写操作幂等：重复调用 `save_plan` / `log_workout` 不产生重复数据（阶段 1 已覆盖）
+- [x] 每个阶段结束时更新 README 和测试，保持 `pytest` 全部通过（已更新至阶段 1）

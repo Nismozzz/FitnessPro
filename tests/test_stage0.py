@@ -39,8 +39,8 @@ async def test_stage0_candidate_edit_confirm_next_turn_and_ownership(db, monkeyp
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
         response = await client.post('/api/v1/agent/chat', headers=headers, json={"message": "我左膝有旧伤"})
         assert response.status_code == 200
-        assert 'event: thinking' in response.text
-        assert '检查身体限制' in response.text
+        assert 'event: thinking' not in response.text
+        assert '检查身体限制' not in response.text
         assert response.text.count('event: done') == 1
         await drain()
         candidates = (await client.get('/api/v1/memories?status=candidate', headers=headers)).json()

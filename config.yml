@@ -78,9 +78,10 @@ memory:
   candidate_window_days: 14
 
 agent:
-  max_iterations: 8
+  max_iterations: 12
   tool_timeout: 30
-  total_timeout: 240
+  total_timeout: 600
+  final_answer_reserve: 60       # 剩余预算不足时停止新增工具调用，给出已有结果
 
 data:
   exercises_url: "https://raw.githubusercontent.com/yuhonas/free-exercise-db/main/dist/exercises.json"

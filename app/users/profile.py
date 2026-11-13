@@ -50,6 +50,10 @@ class ProfileData(BaseModel):
         max_length=12,
         description="可用器械（整体替换原列表）。可选值：" + enum_desc(EQUIPMENT),
     )
+    training_location: Literal["gym", "home", "bodyweight", "custom"] | None = Field(
+        None, description="训练场景：gym 商业健身房；home 家庭；bodyweight 徒手；custom 自定义。未知时先询问用户。"
+    )
+    excluded_equipment: list[EquipmentName] | None = Field(None, max_length=12, description="不可用器械类别，整体替换；只缺某台机器时不要排除整个 machine 类别")
     injuries: list[ShortText] | None = Field(
         None, max_length=10, description="伤病或身体限制（整体替换原列表），如“左膝半月板旧伤”"
     )
@@ -70,7 +74,7 @@ class ProfileData(BaseModel):
     def _n_gender(cls, v: Any) -> Any:
         return normalize(GENDERS, v) or v if isinstance(v, str) else v
 
-    @field_validator("equipment", mode="before")
+    @field_validator("equipment", "excluded_equipment", mode="before")
     @classmethod
     def _n_equipment(cls, v: Any) -> Any:
         if isinstance(v, list):
@@ -124,6 +128,14 @@ def render_profile(profile: dict[str, Any]) -> str:
     if profile.get("equipment"):
         names = "、".join(f"{label(EQUIPMENT, e)}({e})" for e in profile["equipment"])
         lines.append(f"- 可用器械：{names}")
+    from app.training.equipment import effective_equipment, LOCATIONS
+    if profile.get("training_location"):
+        lines.append(f"- 训练场景：{LOCATIONS[profile['training_location']]}")
+    available = effective_equipment(profile)
+    if available is not None:
+        lines.append("- 场景计算后的可用器械：" + "、".join(f"{label(EQUIPMENT, x)}({x})" for x in sorted(available)))
+    if profile.get("excluded_equipment"):
+        lines.append("- 不可用器械：" + "、".join(label(EQUIPMENT, x) for x in profile["excluded_equipment"]))
     if profile.get("injuries"):
         lines.append(f"- 伤病/限制：{'；'.join(profile['injuries'])}")
     if profile.get("notes"):

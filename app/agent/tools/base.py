@@ -83,7 +83,17 @@ class BaseTool(ABC):
     timeout: ClassVar[float | None] = None
 
     def schema(self) -> dict[str, Any]:
-        parameters = clean_schema(self.Params.model_json_schema())
+        schema = self.Params.model_json_schema()
+        defs = schema.get("$defs", {})
+        def inline(node):
+            if isinstance(node, list):
+                return [inline(x) for x in node]
+            if isinstance(node, dict):
+                if "$ref" in node:
+                    return inline({**defs[node["$ref"].split("/")[-1]], **{k: v for k, v in node.items() if k != "$ref"}})
+                return {k: inline(v) for k, v in node.items() if k != "$defs"}
+            return node
+        parameters = clean_schema(inline(schema))
         parameters.setdefault("properties", {})
         parameters["type"] = "object"
         return {

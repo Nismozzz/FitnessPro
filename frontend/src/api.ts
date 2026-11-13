@@ -5,7 +5,9 @@ export async function request<T>(path: string, options: RequestInit = {}): Promi
   const response = await fetch(`/api/v1${path}`, { ...options, headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}), ...options.headers } });
   if (!response.ok) {
     const data = await response.json().catch(() => ({}));
-    throw new ApiError(typeof data.detail === 'string' ? data.detail : response.status === 422 ? '请检查填写内容是否符合要求' : '请求失败，请确认后端服务已启动', response.status);
+    const details = data.validation?.errors?.map((item: { message: string }) => item.message).join('；');
+    const message = typeof data.detail === 'string' ? data.detail : response.status === 422 ? '请检查填写内容是否符合要求' : '请求失败，请确认后端服务已启动';
+    throw new ApiError(details ? `${message}：${details}` : message, response.status);
   }
   return response.status === 204 ? undefined as T : response.json();
 }

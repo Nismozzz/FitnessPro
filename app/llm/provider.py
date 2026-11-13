@@ -103,8 +103,11 @@ class LLMClient:
             stream_options={"include_usage": True},
             **params,
         )
-        async for chunk in stream:
-            yield chunk
+        try:
+            async for chunk in stream:
+                yield chunk
+        finally:
+            await stream.close()
 
 
 _FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)

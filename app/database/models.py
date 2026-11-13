@@ -10,9 +10,9 @@ ORM 模型。
 """
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Date, Index, text, JSON, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database.session import Base
@@ -47,6 +47,8 @@ class UserProfile(Base):
     training_days_per_week: Mapped[int | None] = mapped_column(Integer)
     session_minutes: Mapped[int | None] = mapped_column(Integer)
     equipment: Mapped[list | None] = mapped_column(JSON)
+    training_location: Mapped[str | None] = mapped_column(String(24))
+    excluded_equipment: Mapped[list | None] = mapped_column(JSON)
     injuries: Mapped[list | None] = mapped_column(JSON)
     notes: Mapped[str | None] = mapped_column(Text)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
@@ -131,3 +133,85 @@ class Exercise(Base):
     instructions_zh: Mapped[list | None] = mapped_column(JSON)
     images: Mapped[list | None] = mapped_column(JSON)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class WorkoutPlan(Base):
+    __tablename__ = "workout_plans"
+    __table_args__ = (
+        UniqueConstraint("user_id", "content_hash", name="uq_plan_content"),
+        Index("uq_user_active_plan", "user_id", unique=True,
+              sqlite_where=text("status = 'active'"), postgresql_where=text("status = 'active'")),
+    )
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    name: Mapped[str] = mapped_column(String(100))
+    goal: Mapped[str] = mapped_column(String(32))
+    split_type: Mapped[str] = mapped_column(String(32))
+    week_start: Mapped[date] = mapped_column(Date)
+    status: Mapped[str] = mapped_column(String(16), default="draft")
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    root_id: Mapped[str] = mapped_column(String(32))
+    content_hash: Mapped[str] = mapped_column(String(64))
+    draft: Mapped[dict] = mapped_column(JSON)
+    validation: Mapped[dict] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class PlanDay(Base):
+    __tablename__ = "plan_days"
+    __table_args__ = (UniqueConstraint("plan_id", "weekday", name="uq_plan_weekday"),)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    plan_id: Mapped[str] = mapped_column(ForeignKey("workout_plans.id", ondelete="CASCADE"), index=True)
+    weekday: Mapped[int] = mapped_column(Integer)
+    focus: Mapped[str] = mapped_column(String(100))
+    notes: Mapped[str] = mapped_column(Text, default="")
+    warmup_minutes: Mapped[int] = mapped_column(Integer, default=5)
+    cooldown_minutes: Mapped[int] = mapped_column(Integer, default=5)
+
+
+class PlanExercise(Base):
+    __tablename__ = "plan_exercises"
+    __table_args__ = (UniqueConstraint("plan_day_id", "position", name="uq_day_position"),)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    plan_day_id: Mapped[str] = mapped_column(ForeignKey("plan_days.id", ondelete="CASCADE"), index=True)
+    exercise_id: Mapped[str] = mapped_column(ForeignKey("exercises.id"))
+    position: Mapped[int] = mapped_column(Integer)
+    sets: Mapped[int] = mapped_column(Integer)
+    reps_min: Mapped[int | None] = mapped_column(Integer)
+    reps_max: Mapped[int | None] = mapped_column(Integer)
+    duration_seconds: Mapped[int | None] = mapped_column(Integer)
+    rest_seconds: Mapped[int] = mapped_column(Integer)
+    rpe: Mapped[float | None]
+    target_weight_kg: Mapped[float | None]
+    notes: Mapped[str] = mapped_column(Text, default="")
+    snapshot: Mapped[dict] = mapped_column(JSON)
+
+
+class WorkoutLog(Base):
+    __tablename__ = "workout_logs"
+    __table_args__ = (UniqueConstraint("user_id", "idempotency_key", name="uq_log_idempotency"),)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    plan_day_id: Mapped[str | None] = mapped_column(ForeignKey("plan_days.id"))
+    performed_at: Mapped[datetime] = mapped_column(DateTime, index=True)
+    duration_min: Mapped[int] = mapped_column(Integer)
+    rpe: Mapped[float | None]
+    notes: Mapped[str] = mapped_column(Text, default="")
+    idempotency_key: Mapped[str] = mapped_column(String(100))
+    content_hash: Mapped[str] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class WorkoutSet(Base):
+    __tablename__ = "workout_sets"
+    __table_args__ = (UniqueConstraint("log_id", "exercise_id", "set_no", name="uq_log_set"),)
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    log_id: Mapped[str] = mapped_column(ForeignKey("workout_logs.id", ondelete="CASCADE"), index=True)
+    exercise_id: Mapped[str] = mapped_column(ForeignKey("exercises.id"))
+    set_no: Mapped[int] = mapped_column(Integer)
+    reps: Mapped[int | None] = mapped_column(Integer)
+    duration_seconds: Mapped[int | None] = mapped_column(Integer)
+    weight_kg: Mapped[float | None]
+    rpe: Mapped[float | None]
+    completed: Mapped[bool]
+    snapshot: Mapped[dict] = mapped_column(JSON)

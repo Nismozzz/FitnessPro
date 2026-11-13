@@ -102,9 +102,10 @@ class MemorySettings(BaseModel):
 
 
 class AgentSettings(BaseModel):
-    max_iterations: int = 8
+    max_iterations: int = 12
     tool_timeout: float = 30.0
-    total_timeout: float = 240.0
+    total_timeout: float = 600.0
+    final_answer_reserve: float = 60.0
 
 
 class DataSettings(BaseModel):

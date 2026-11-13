@@ -28,7 +28,16 @@ def _retriever():
 @router.post("/search")
 async def search(body: SearchRequest, _user: str = Depends(get_current_user_id)) -> dict[str, Any]:
     """检索调试接口：返回融合排序的名次信息，便于评估检索质量。"""
-    result = await _retriever().search(body.query, body.to_filter(), body.top_k)
+    from app.training.equipment import effective_equipment
+    from app.users.profile import get_profile
+    available = effective_equipment(await get_profile(_user))
+    filters = body.to_filter()
+    if available is not None:
+        allowed = sorted(available & set(filters.equipment)) if filters.equipment else sorted(available)
+        if not allowed:
+            return {"mode": "filtered", "total_candidates": 0, "warnings": ["所选器械在当前场景不可用"], "hits": []}
+        filters.equipment = allowed
+    result = await _retriever().search(body.query, filters, body.top_k)
     return {
         "mode": result.mode,
         "total_candidates": result.total_candidates,

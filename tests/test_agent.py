@@ -121,8 +121,8 @@ async def test_loop_tool_then_answer():
     events, transcript = await collect(loop, [{"role": "user", "content": "hi"}])
 
     types = [e.type for e in events]
-    assert types == ["tool_call", "tool_result", "content", "content", "done"]
-    assert events[0].data["arguments"] == {"text": "hi"}
+    assert types == ["content_reset", "tool_call", "tool_result", "content", "content", "done"]
+    assert next(e for e in events if e.type == "tool_call").data["arguments"] == {"text": "hi"}
     assert events[-1].data["status"] == "completed"
     assert [m["role"] for m in transcript] == ["assistant", "tool", "assistant"]
     assert transcript[1]["name"] == "echo" and transcript[-1]["content"] == "你好！"
@@ -169,7 +169,7 @@ async def test_loop_llm_error_ends_with_done():
     assert transcript == [{"role": "assistant", "content": "部分"}]
 
 
-async def test_thinking_streamed_but_not_persisted_and_replayed_only_within_turn():
+async def test_reasoning_is_private_and_replayed_only_within_turn():
     first = chunk(tool_calls=[tc(0, "c1", "echo", '{"text":"ok"}')])
     first.choices[0].delta.reasoning_content = "先检查用户的训练情况"
     second = chunk("根据你的情况，建议循序训练。")
@@ -178,10 +178,10 @@ async def test_thinking_streamed_but_not_persisted_and_replayed_only_within_turn
     loop = AgentLoop(llm, ToolExecutor([EchoTool()]), AgentSettings(max_iterations=4))
     events, transcript = await collect(loop, [{"role": "user", "content": "训练建议"}])
 
-    assert [e.type for e in events] == ["thinking", "tool_call", "tool_result", "thinking", "content", "done"]
-    assert [e.data["delta"] for e in events if e.type == "thinking"] == [
-        "先检查用户的训练情况", "再结合工具结果"
-    ]
+    assert [e.type for e in events] == ["content_reset", "tool_call", "tool_result", "content", "done"]
+    assert not any(e.type == "thinking" for e in events)
+    assert "先检查用户的训练情况" not in str(events)
+    assert "再结合工具结果" not in str(events)
     assert sum(e.type == "done" for e in events) == 1
     working = llm.calls[1]["messages"]
     assert working[1]["reasoning_content"] == "先检查用户的训练情况"
@@ -201,5 +201,83 @@ async def test_thinking_only_failure_has_one_terminal_event_and_no_persistence()
         AgentLoop(BrokenReasoning(), ToolExecutor([]), AgentSettings()),
         [{"role": "user", "content": "hi"}],
     )
-    assert [e.type for e in events] == ["thinking", "error", "done"]
+    assert [e.type for e in events] == ["error", "done"]
     assert transcript == []
+
+
+async def test_tool_round_narration_is_not_final_answer():
+    llm = FakeLLM([
+        [chunk("先检索，再校验；"), chunk(tool_calls=[tc(0, "c1", "echo", '{"text":"ok"}')])],
+        [chunk("这是你的周计划。")],
+    ])
+    events, transcript = await collect(
+        AgentLoop(llm, ToolExecutor([EchoTool()]), AgentSettings()),
+        [{"role": "user", "content": "规划一周"}],
+    )
+    visible = ''
+    for event in events:
+        if event.type == 'content_reset': visible = ''
+        if event.type == 'content': visible += event.data['delta']
+    assert visible == '这是你的周计划。'
+    assert not any(e.type == 'thinking' for e in events)
+    assert transcript[0]['tool_calls']  # 保留模型工具协议所需的消息
+    assert transcript[-1]['content'] == '这是你的周计划。'
+
+
+async def test_low_budget_reserves_final_answer_round():
+    llm = FakeLLM([[chunk('尚未保存计划，请补充信息。')]])
+    events, _ = await collect(
+        AgentLoop(llm, ToolExecutor([EchoTool()]),
+                  AgentSettings(total_timeout=10, final_answer_reserve=20)),
+        [{'role': 'user', 'content': '计划'}],
+    )
+    assert llm.calls[0]['kw']['tool_choice'] == 'none'
+    assert events[-1].data['status'] == 'completed'
+
+
+async def test_total_deadline_cancels_slow_stream():
+    class SlowLLM:
+        async def stream(self, *args, **kwargs):
+            await asyncio.sleep(10)
+            yield chunk('太迟')
+
+    loop = AgentLoop(SlowLLM(), ToolExecutor([]), AgentSettings(total_timeout=1.02))
+    events, transcript = await asyncio.wait_for(
+        collect(loop, [{'role': 'user', 'content': '计划'}]), timeout=3,
+    )
+    assert events[-1].data['status'] == 'timeout'
+    assert sum(e.type == 'done' for e in events) == 1
+    assert transcript == []
+
+
+async def test_failed_tool_round_does_not_publish_narration():
+    class BrokenToolStream:
+        async def stream(self, *args, **kwargs):
+            yield chunk('我先保存草稿：')
+            yield chunk(tool_calls=[tc(0, 'c1', 'echo', '{"text":')])
+            raise RuntimeError('connection lost')
+
+    events, transcript = await collect(
+        AgentLoop(BrokenToolStream(), ToolExecutor([EchoTool()]), AgentSettings()),
+        [{'role': 'user', 'content': '计划'}],
+    )
+    assert [e.type for e in events] == ['content', 'content_reset', 'error', 'done']
+    assert transcript == []
+    assert events[-1].data['status'] == 'error'
+
+
+async def test_answer_delta_is_delivered_before_model_stream_finishes():
+    observed = []
+
+    class StreamingLLM:
+        async def stream(self, *args, **kwargs):
+            yield chunk('第一段')
+            assert any(e.type == 'content' and e.data['delta'] == '第一段' for e in observed)
+            yield chunk('第二段')
+
+    transcript = []
+    loop = AgentLoop(StreamingLLM(), ToolExecutor([]), AgentSettings())
+    async for event in loop.run([{'role': 'user', 'content': '你好'}], CTX, transcript):
+        observed.append(event)
+    assert observed[-1].data['status'] == 'completed'
+    assert transcript[-1]['content'] == '第一段第二段'

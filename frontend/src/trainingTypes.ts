@@ -1,0 +1,12 @@
+export type ExerciseInfo = { id: string; name: string; name_zh?: string; equipment: string; primary_muscles: string[]; category?: string };
+export type Prescription = { id: string; exercise_id: string; position: number; sets: number; reps_min: number | null; reps_max: number | null; duration_seconds: number | null; rest_seconds: number; rpe: number | null; target_weight_kg: number | null; notes: string; exercise: ExerciseInfo };
+export type PlanDay = { id: string; weekday: number; focus: string; notes: string; warmup_minutes: number; cooldown_minutes: number; exercises: Prescription[] };
+export type Plan = { id: string; name: string; week_start: string; goal: string; status: string; version: number; days: PlanDay[]; validation: { warnings: { message: string }[]; estimated_minutes: Record<string, number> } };
+export type SetEntry = { exercise_id: string; set_no: number; reps: number | null; duration_seconds: number | null; weight_kg: number | null; rpe: number | null; completed: boolean };
+export type TrainingLog = { id: string; performed_at: string; plan_day_id: string | null; duration_min: number; notes: string; sets: (SetEntry & { exercise: ExerciseInfo })[] };
+export type WeeklyStats = { week_start: string; plan_id: string | null; planned_days: number; completed_days: number; completion_rate: number | null; workouts: number; completed_sets: number; duration_min: number; volume_kg_reps: number; daily: { date: string; volume_kg_reps: number; duration_min: number; sets: number }[]; muscles: { muscle: string; planned_sets: number; actual_sets: number; volume_kg_reps: number }[]; prs: { exercise_id: string; name: string; estimated_1rm_kg: number; previous_best_kg: number | null; is_pr: boolean }[]; notes: string[] };
+export const weekdays = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
+export const equipmentLabels: Record<string, string> = { 'body only': '徒手', barbell: '杠铃', dumbbell: '哑铃', kettlebells: '壶铃', cable: '绳索', machine: '固定器械', bands: '弹力带', 'medicine ball': '药球', 'exercise ball': '瑜伽球', 'foam roll': '泡沫轴', 'e-z curl bar': '曲杆', other: '其他器械' };
+export function monday(date = new Date()) { const day = new Date(date); day.setDate(day.getDate() - (day.getDay() + 6) % 7); return localDate(day); }
+export function localDate(date: Date) { return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`; }
+export function dayDate(week: string, weekday: number) { const date = new Date(`${week}T12:00:00`); date.setDate(date.getDate() + weekday); return localDate(date); }

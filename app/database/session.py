@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from sqlalchemy import event
+from sqlalchemy import event, inspect, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
@@ -35,3 +35,8 @@ async def init_db() -> None:
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # Additive upgrade for existing local databases; all original profile data is retained.
+        columns = await conn.run_sync(lambda c: {x["name"] for x in inspect(c).get_columns("user_profiles")})
+        for name, sql_type in (("training_location", "VARCHAR(24)"), ("excluded_equipment", "JSON")):
+            if name not in columns:
+                await conn.execute(text(f"ALTER TABLE user_profiles ADD COLUMN {name} {sql_type}"))

@@ -34,19 +34,43 @@ async function render(element) { await act(async () => root.render(element)); }
 async function click(element) { assert.ok(element); await act(async () => element.click()); }
 function button(text) { return [...document.querySelectorAll('button')].find(e => e.textContent.trim() === text); }
 
-test('thinking defaults closed, updates live, folds on first answer, then stays user controlled', async () => {
-  await render(h(ThinkingBlock, { text: '先了解目标', answering: false, streaming: true }));
-  let details = document.querySelector('details');
-  assert.equal(details.open, false);
-  details.open = true;
-  await render(h(ThinkingBlock, { text: '先了解目标，再选择动作', answering: false, streaming: true }));
+test('execution shows tool arguments, results and errors, then folds and stops animation', async () => {
+  const { updateExecution } = await import('../src/execution.ts');
+  let execution = { startedAt: Date.now(), status: 'running', steps: [] };
+  const props = () => ({ execution, labels: { search_exercises: '检索动作' } });
+  await render(h(ThinkingBlock, props()));
+  const details = document.querySelector('.execution-panel');
   assert.equal(details.open, true);
-  assert.match(details.textContent, /再选择动作/);
-  await render(h(ThinkingBlock, { text: '先了解目标，再选择动作', answering: true, streaming: true }));
+  execution = updateExecution(execution, 'tool_call', { id: 'c1', name: 'search_exercises', arguments: { query: '胸部' } });
+  await render(h(ThinkingBlock, props()));
+  assert.match(details.textContent, /检索动作/);
+  assert.match(details.textContent, /胸部/);
+  assert.match(details.textContent, /执行中/);
+  execution = updateExecution(execution, 'tool_result', { id: 'c1', success: false, data: { matched: 0 }, error: '检索超时', ms: 1200 });
+  execution = updateExecution(execution, 'error', { message: '请稍后再试' });
+  execution = updateExecution(execution, 'done', { status: 'error' });
+  await render(h(ThinkingBlock, props()));
   assert.equal(details.open, false);
+  assert.match(details.textContent, /matched/);
+  assert.match(details.textContent, /检索超时/);
+  assert.match(details.textContent, /请稍后再试/);
+  assert.match(details.textContent, /1.2 秒/);
+  assert.equal(document.querySelectorAll('.execution-spinner').length, 0);
   details.open = true;
-  await render(h(ThinkingBlock, { text: '先了解目标，再选择动作', answering: true, streaming: false }));
+  await render(h(ThinkingBlock, props()));
   assert.equal(details.open, true);
+});
+
+test('interrupted streams finish pending tool states', async () => {
+  const { updateExecution } = await import('../src/execution.ts');
+  let execution = { startedAt: 100, status: 'running', steps: [] };
+  execution = updateExecution(execution, 'tool_call', { id: 'a', name: 'save_plan', arguments: {} }, 200);
+  execution = updateExecution(execution, 'done', { status: 'stopped' }, 1500);
+  assert.equal(execution.endedAt, 1500);
+  assert.equal(execution.steps[0].status, 'interrupted');
+  assert.equal(execution.steps[0].ms, 1300);
+  await render(h(ThinkingBlock, { execution, labels: {} }));
+  assert.equal(document.querySelectorAll('.execution-spinner').length, 0);
 });
 
 test('memory tabs isolate candidates; editing preserves confirmation and calls correct actions', async () => {

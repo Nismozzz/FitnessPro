@@ -6,9 +6,11 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import APIRouter, FastAPI
+from fastapi.responses import JSONResponse
+from app.training.service import TrainingError
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import agent, auth, knowledge, memories, users
+from app.api import agent, auth, knowledge, memories, users, training
 from app.config import settings
 from app.database.session import engine, init_db
 from app.rag.retriever import init_retriever
@@ -36,7 +38,7 @@ app.add_middleware(
 )
 
 api = APIRouter(prefix="/api/v1")
-for module in (auth, users, memories, agent, knowledge):
+for module in (auth, users, memories, agent, knowledge, training):
     api.include_router(module.router)
 app.include_router(api)
 
@@ -44,3 +46,8 @@ app.include_router(api)
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.exception_handler(TrainingError)
+async def training_error(_request, exc: TrainingError):
+    return JSONResponse(status_code=exc.status, content={"detail": str(exc), "validation": exc.validation})

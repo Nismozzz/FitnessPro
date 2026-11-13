@@ -35,7 +35,16 @@ class SearchExercisesTool(BaseTool):
             retriever = get_retriever()
         except KnowledgeBaseNotReady as exc:
             raise ToolError(str(exc)) from exc
-        result = await retriever.search(params.query, params.to_filter(), params.top_k)
+        from app.users.profile import get_profile
+        from app.training.equipment import effective_equipment
+        available = effective_equipment(await get_profile(ctx.user_id))
+        filters = params.to_filter()
+        if available is not None:
+            allowed = sorted(available & set(filters.equipment)) if filters.equipment else sorted(available)
+            if not allowed:
+                return {"matched_by_filters": 0, "exercises": [], "warnings": ["所选器械在当前训练场景不可用"]}
+            filters.equipment = allowed
+        result = await retriever.search(params.query, filters, params.top_k)
         return {
             "matched_by_filters": result.total_candidates,
             "retrieval_mode": result.mode,

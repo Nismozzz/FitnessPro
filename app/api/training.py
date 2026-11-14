@@ -7,6 +7,7 @@ from app.auth.security import get_current_user_id
 from app.training import service
 from app.training.schema import LogCreate, PlanDraft, Replacement
 from app.training.stats import weekly_stats
+from app.training.progression import ApplyNextWeek, apply_next_week, suggest_next_week
 
 router = APIRouter(tags=["training"])
 UserId = Annotated[str, Depends(get_current_user_id)]
@@ -65,3 +66,13 @@ async def log(log_id: str, user_id: UserId):
 @router.get("/stats/weekly")
 async def stats(user_id: UserId, week_start: date = Query(...), plan_id: str | None = None):
     return await weekly_stats(user_id, week_start, plan_id)
+
+
+@router.post("/plans/{plan_id}/suggest-next-week")
+async def suggest(plan_id: str, user_id: UserId):
+    return await suggest_next_week(user_id, plan_id)
+
+
+@router.post("/plans/{plan_id}/next-week", status_code=201)
+async def next_week(plan_id: str, body: ApplyNextWeek, user_id: UserId):
+    return await apply_next_week(user_id, plan_id, body)

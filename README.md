@@ -31,7 +31,7 @@ app/
   llm/            模型调用与 token 估算
   memory/         记忆提取与服务
   rag/            BM25、向量库、Embedding、重排、混合检索
-  training/       计划 schema、规则校验器、器械预设、训练服务与统计
+  training/       计划 schema、规则校验器、器械预设、训练服务、统计与渐进调整
   users/          用户档案
 frontend/         React 前端
 scripts/          动作知识库入库、命令行对话
@@ -72,7 +72,15 @@ config.yml        非敏感配置（模型、检索、上下文、记忆等参�
 - 前端：周视图、训练记录页、训练统计（容量趋势、完成率、个人表现）。
 - 所有资源按用户隔离，已有双用户互访测试。
 
-### 2.7 API 概览
+### 2.7 根据记录调整下周计划
+- 规则优先，LLM 解释理由：同一处方及负重，连续两次（不同训练日期）完成所有组并达到次数上限，上肢加 2.5kg / 下肢加 5kg；徒手或未设定负重则次数区间加 1。
+- 连续两次未完成最低次数目标，有明确目标重量时降重 7.5%；缺组、未知重量不直接视为失败。计时动作暂不调整。
+- 连续三个完整周的最佳估算 1RM 无提升时，使用现有动作检索服务寻找同主要肌群、同器械的不同动作，并对候选重新校验；缺周不判断停滞。1RM 沿用统计口径（1–10 次自由负重完成组）。加减重优先于停滞替换。
+- Agent 工具：`suggest_next_week` 只预览调整项、理由及候选；用户明确确认后 `apply_next_week` 保存新版本草稿。计划页也可直接查看建议、选择替换候选并确认保存。
+- 下周为当前计划周 +7 天；分析截止该周末且不使用未来记录，回看最近 28 天本人记录（自由训练及同一计划版本链）。建议变化时拒绝旧确认；相同内容重试幂等。
+- 新版沿用 `root_id`，版本递增；用户激活后旧版归档，历史计划和记录保留。不同动作不沿用旧目标重量；无合适候选或知识库未就绪时保留原动作。
+
+### 2.8 API 概览
 所有接口前缀为 `/api/v1`，交互式文档见 `http://127.0.0.1:8000/docs`。
 
 | 模块 | 路径 |
@@ -83,6 +91,7 @@ config.yml        非敏感配置（模型、检索、上下文、记忆等参�
 | 记忆 | `GET/POST /memories`、`POST /memories/{id}/confirm`、`POST /memories/{id}/reject`、`PATCH/DELETE /memories/{id}` |
 | 知识库 | `POST /knowledge/search`、`GET /knowledge/exercises/{id}`、`GET /knowledge/stats` |
 | 计划 | `POST /plans/validate`、`GET/POST /plans`、`GET /plans/active`、`GET /plans/{id}`、`POST /plans/{id}/activate`、`PATCH /plans/{id}/exercises` |
+| 下周调整 | `POST /plans/{id}/suggest-next-week`（只读预览）、`POST /plans/{id}/next-week`（确认后保存草稿，传 suggestion_id 与 replacements） |
 | 训练记录 | `GET/POST /logs`、`GET /logs/{id}`、`GET /stats/weekly` |
 | 健康检查 | `GET /health` |
 
@@ -172,9 +181,9 @@ token 为估算值；表结构由 create_all 创建，正式环境应引入 Alem
 - [x] 测试
 
 ### 阶段 2：根据记录自动调整计划
-- [ ] 渐进超负荷规则
-- [ ] 停滞检测与动作替换
-- [ ] `suggest_next_week` 工具
+- [x] 渐进超负荷规则
+- [x] 停滞检测与动作替换
+- [x] `suggest_next_week` 工具与确认后生成新版本
 
 ### 阶段 3：评测
 - [ ] 检索评测集与脚本
@@ -208,4 +217,4 @@ token 为估算值；表结构由 create_all 创建，正式环境应引入 Alem
 - [ ] 提示注入：用户输入、检索文档、搜索结果三类来源各有用例
 - [ ] 伤病场景：有伤病的用户不推荐对应高风险动作，回答包含就医提示
 - [x] 写操作幂等：重复调用 `save_plan` / `log_workout` 不产生重复数据（阶段 1 已覆盖）
-- [x] 每个阶段结束时更新 README 和测试，保持 `pytest` 全部通过（已更新至阶段 1）
+- [x] 每个阶段结束时更新 README 和测试，保持 `pytest` 全部通过（已更新至阶段 2）

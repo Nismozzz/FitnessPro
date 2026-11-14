@@ -84,7 +84,7 @@ async def serialize_plan(db, row: WorkoutPlan) -> dict:
     return data
 
 
-async def save_plan(user_id: str, plan: PlanDraft, parent_id: str | None = None) -> dict:
+async def save_plan(user_id: str, plan: PlanDraft, parent_id: str | None = None, require_active_parent: bool = False) -> dict:
     profile, docs = await validation_inputs(user_id, plan)
     validation = validate_plan(plan, profile, docs)
     if not validation["valid"]:
@@ -94,6 +94,8 @@ async def save_plan(user_id: str, plan: PlanDraft, parent_id: str | None = None)
     async with SessionLocal() as db:
         await lock_user(db, user_id)
         parent = await owned_plan(db, user_id, parent_id) if parent_id else None
+        if require_active_parent and (parent is None or parent.status != "active"):
+            raise TrainingError("当前计划已变化，请重新生成建议", 409)
         existing = await db.scalar(select(WorkoutPlan).where(WorkoutPlan.user_id == user_id, WorkoutPlan.content_hash == content_hash))
         if existing:
             return await serialize_plan(db, existing)

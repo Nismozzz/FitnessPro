@@ -122,3 +122,29 @@ test('private training pages do not make requests before login', async () => {
   assert.equal(calls.length, 0);
   await click(button('登录 / 注册')); assert.equal(login, true);
 });
+
+test('next week suggestions require preview and confirmation before saving a draft', async () => {
+  await render(null);
+  const { NextWeekPanel } = await import('../src/NextWeekPanel.tsx');
+  calls = []; let saved;
+  globalThis.fetch = async (url, options = {}) => {
+    calls.push({ url, options });
+    if (url.endsWith('/suggest-next-week')) return new Response(JSON.stringify({
+      suggestion_id: 'a'.repeat(64), source_plan_id: 'p1', week_start: '2026-12-07',
+      adjustments: [{ weekday: 0, position: 0, exercise_id: 'press', name: '哑铃卧推', kind: 'replace', reason: '三个完整周无提升', changes: {}, candidates: [{ exercise_id: 'alt', name: '替代动作' }] }],
+      validation: { valid: true, errors: [], warnings: [] }, warnings: [], notes: ['确认后保存草稿']
+    }));
+    if (url.endsWith('/next-week')) return new Response(JSON.stringify({ ...plan, id: 'p2', version: 2 }));
+    throw new Error(`Unexpected request ${url}`);
+  };
+  await render(h(NextWeekPanel, { planId: 'p1', disabled: false, onSaved: async p => { saved = p; } }));
+  assert.equal(calls.length, 0);
+  await click(button('查看下周调整建议'));
+  assert.equal(calls.length, 1);
+  assert.match(document.body.textContent, /三个完整周无提升/);
+  await value(document.querySelector('select'), 'alt');
+  await click(button('确认建议，保存下周草稿'));
+  assert.equal(saved.id, 'p2');
+  assert.deepEqual(JSON.parse(calls[1].options.body), { suggestion_id: 'a'.repeat(64), replacements: [{ weekday: 0, position: 0, exercise_id: 'alt' }] });
+  assert.equal(calls.filter(c => c.url.endsWith('/activate')).length, 0);
+});

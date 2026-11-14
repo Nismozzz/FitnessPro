@@ -215,3 +215,28 @@ class WorkoutSet(Base):
     rpe: Mapped[float | None]
     completed: Mapped[bool]
     snapshot: Mapped[dict] = mapped_column(JSON)
+
+
+class RagEvaluation(Base):
+    """RAGAS 在线评估结果。一轮对话（turn）至多一条，异步回填分数。"""
+
+    __tablename__ = "rag_evaluations"
+    __table_args__ = (
+        UniqueConstraint("session_id", "turn_id", name="uq_rag_eval_turn"),
+        Index("ix_rag_eval_user_created", "user_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(String(32), index=True)
+    session_id: Mapped[str] = mapped_column(String(32), index=True)
+    turn_id: Mapped[str] = mapped_column(String(32))
+    query: Mapped[str] = mapped_column(Text)
+    contexts: Mapped[list] = mapped_column(JSON)
+    response: Mapped[str] = mapped_column(Text)
+    faithfulness: Mapped[float | None] = mapped_column(nullable=True)
+    answer_relevancy: Mapped[float | None] = mapped_column(nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="pending")  # pending/completed/failed
+    error_message: Mapped[str | None] = mapped_column(Text)
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    evaluated_at: Mapped[datetime | None] = mapped_column(DateTime)

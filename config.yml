@@ -20,14 +20,14 @@ llm:
     model: "deepseek-flash"
     base_url: "https://api.deepseek.com"
     api_key_env: "FAST_LLM_API_KEY"
-    temperature: 0.3
+    temperature: 0.1
     max_tokens: 8192
     timeout: 120
   normal:
     model: "deepseek-v4-pro"
     base_url: "https://api.deepseek.com"
     api_key_env: "LLM_API_KEY"
-    temperature: 0.3
+    temperature: 0.1
     max_tokens: 131072
     timeout: 120
 
@@ -82,6 +82,21 @@ agent:
   tool_timeout: 30
   total_timeout: 600
   final_answer_reserve: 60       # 剩余预算不足时停止新增工具调用，给出已有结果
+
+# -----------------------------------------------------------------------------
+# RAGAS 在线评估（后台异步，不阻塞对话；需要 pip install ragas）
+# 只评估本轮调用过动作库检索工具的回答；无参考答案，仅支持 faithfulness / answer_relevancy
+# -----------------------------------------------------------------------------
+evaluation:
+  enabled: true
+  sample_rate: 1.0          # 抽样比例 0~1
+  llm_tier: "fast"          # 评审模型档位
+  timeout_seconds: 300
+  max_concurrency: 2        # 同时进行的评估数
+  max_context_chars: 12000
+  metrics: ["faithfulness", "answer_relevancy"]
+  alert_faithfulness: 0.3
+  alert_answer_relevancy: 0.5
 
 data:
   exercises_url: "https://raw.githubusercontent.com/yuhonas/free-exercise-db/main/dist/exercises.json"

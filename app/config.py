@@ -108,6 +108,28 @@ class AgentSettings(BaseModel):
     final_answer_reserve: float = 60.0
 
 
+class EvaluationSettings(BaseModel):
+    """RAGAS 在线评估：回答完成后在后台对检索类回答打分，不阻塞对话。"""
+
+    enabled: bool = False
+    sample_rate: float = Field(default=1.0, ge=0.0, le=1.0)
+    llm_tier: Literal["fast", "normal"] = "fast"
+    timeout_seconds: float = 300.0
+    max_concurrency: int = 2
+    max_context_chars: int = 12000
+    # 评审模型的额外请求参数。DeepSeek 思考模式会先生成上万字推理，容易撞 max_tokens 导致
+    # 结构化输出被截断并反复重试，评估应关闭思考：{"thinking": {"type": "disabled"}}
+    llm_extra_body: dict = Field(default_factory=dict)
+    llm_max_tokens: int = 8192
+    # 无参考答案时只有这两个指标可用
+    metrics: list[Literal["faithfulness", "answer_relevancy"]] = Field(
+        default_factory=lambda: ["faithfulness", "answer_relevancy"]
+    )
+    # 低于阈值的评估会输出 warning 日志
+    alert_faithfulness: float = 0.3
+    alert_answer_relevancy: float = 0.5
+
+
 class DataSettings(BaseModel):
     exercises_url: str = (
         "https://raw.githubusercontent.com/yuhonas/free-exercise-db/main/dist/exercises.json"
@@ -152,6 +174,7 @@ class Settings(BaseModel):
     context: ContextSettings = Field(default_factory=ContextSettings)
     memory: MemorySettings = Field(default_factory=MemorySettings)
     agent: AgentSettings = Field(default_factory=AgentSettings)
+    evaluation: EvaluationSettings = Field(default_factory=EvaluationSettings)
     data: DataSettings = Field(default_factory=DataSettings)
     auth: AuthSettings = Field(default_factory=AuthSettings)
 

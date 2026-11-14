@@ -85,7 +85,7 @@ class ExerciseRetriever:
     # ---------------- 加载 ----------------
 
     @classmethod
-    async def load(cls) -> "ExerciseRetriever":
+    async def load(cls, *, enable_dense: bool = True, enable_rerank: bool = True) -> "ExerciseRetriever":
         from sqlalchemy import select
 
         from app.database.models import Exercise
@@ -99,18 +99,18 @@ class ExerciseRetriever:
             )
         docs = [ExerciseDoc.from_model(r) for r in rows]
 
-        store = LocalVectorStore.load(resolve_path(settings.data.index_dir))
+        store = LocalVectorStore.load(resolve_path(settings.data.index_dir)) if enable_dense else None
         embedder: Embedder | None = None
-        if store is None:
+        if store is None and enable_dense:
             logger.warning("未找到向量索引，仅使用 BM25 检索")
-        elif store.meta.get("embedding_model") != settings.embedding.model:
+        elif store is not None and store.meta.get("embedding_model") != settings.embedding.model:
             logger.warning(
                 "向量索引的模型 %s 与当前配置 %s 不一致，已禁用向量检索，请重新入库",
                 store.meta.get("embedding_model"),
                 settings.embedding.model,
             )
             store = None
-        else:
+        elif store is not None:
             try:
                 embedder = create_embedder(settings.embedding)
             except Exception as exc:  # 缺少 key 等
@@ -118,7 +118,7 @@ class ExerciseRetriever:
                 store = None
 
         reranker = None
-        if settings.reranker.enabled:
+        if enable_rerank and settings.reranker.enabled:
             try:
                 reranker = Reranker(settings.reranker)
             except Exception as exc:
@@ -158,8 +158,11 @@ class ExerciseRetriever:
         return vec
 
     async def search(
-        self, query: str, filters: ExerciseFilter | None = None, top_k: int | None = None
+        self, query: str, filters: ExerciseFilter | None = None, top_k: int | None = None,
+        *, mode: str = "hybrid", rerank: bool | None = None,
     ) -> SearchResult:
+        if mode not in {"bm25", "dense", "hybrid"}:
+            raise ValueError("mode must be bm25, dense, or hybrid")
         filters = filters or ExerciseFilter()
         top_k = top_k or self.cfg.default_top_k
         candidates = [self.docs[i] for i in self._order if filters.matches(self.docs[i])]
@@ -184,14 +187,14 @@ class ExerciseRetriever:
         warnings: list[str] = []
 
         dense: list[tuple[str, float]] = []
-        if self.vector_store is not None:
+        if mode != "bm25" and self.vector_store is not None:
             try:
                 qvec = await self._embed_query(query)
                 dense = self.vector_store.search(qvec, self.cfg.dense_top_k, allowed)
             except Exception as exc:
                 logger.warning("向量检索失败，降级为关键词检索：%s", exc)
                 warnings.append("向量检索暂不可用，本次结果仅基于关键词匹配")
-        sparse = self.bm25.search(query, self.cfg.sparse_top_k, allowed)
+        sparse = self.bm25.search(query, self.cfg.sparse_top_k, allowed) if mode != "dense" else []
 
         fused = rrf_fuse([r for r in (dense, sparse) if r], k=self.cfg.rrf_k)
         if not fused:
@@ -214,9 +217,9 @@ class ExerciseRetriever:
             )
             for doc_id, score in fused
         ]
-        mode = "hybrid" if dense else "sparse_only"
+        mode = "hybrid" if dense and sparse else "dense_only" if dense else "sparse_only"
 
-        if self.reranker is not None and len(hits) > 1:
+        if self.reranker is not None and rerank is not False and len(hits) > 1:
             pool = hits[: self.rerank_candidates]
             try:
                 ranked = await self.reranker.rerank(

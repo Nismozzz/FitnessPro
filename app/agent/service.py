@@ -20,6 +20,7 @@ from app.context.builder import ContextBuilder
 from app.context.compressor import context_compressor
 from app.conversation import repository as repo
 from app.database.models import new_id
+from app.evaluation.service import evaluation_service
 from app.llm.provider import get_llm
 from app.memory.extractor import extract_memories
 from app.utils.background import spawn
@@ -106,6 +107,16 @@ class AgentService:
 
                 await queue.put(done_event or AgentEvent("done", {"status": "error"}))
                 terminal_sent = True
+
+            if final_answer and done_event is not None and done_event.data.get("status") == "completed":
+                await evaluation_service.schedule(
+                    user_id=user_id,
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    query=message,
+                    transcript=transcript,
+                    response=final_answer,
+                )
 
             spawn(context_compressor.maybe_compress(session_id), name=f"compress:{session_id}")
             if final_answer and settings.memory.auto_extract:

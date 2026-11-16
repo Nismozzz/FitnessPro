@@ -24,7 +24,7 @@ test('SSE handles split UTF-8, CRLF, tools, errors, and terminal status', async 
   assert.equal(events[1].data.delta, '分析训练目标');
   assert.deepEqual(events.map(e => e.type), ['session', 'thinking', 'content', 'tool_call', 'error', 'done']);
   assert.equal(sent.options.headers.Authorization, 'Bearer test-token');
-  assert.deepEqual(JSON.parse(sent.options.body), { message: '训练建议', session_id: null });
+  assert.deepEqual(JSON.parse(sent.options.body), { message: '训练建议', session_id: null, model_tier: 'normal' });
 });
 test('SSE reports prematurely closed connections', async () => {
   globalThis.fetch = async () => responseFor('event: content\ndata: {"delta":"部分回答"}\n\n');
@@ -38,4 +38,16 @@ test('HTTP errors retain status and server message', async () => {
 test('DELETE requests support empty 204 responses', async () => {
   globalThis.fetch = async (_, options) => { assert.equal(options.method, 'DELETE'); return new Response(null, { status: 204 }); };
   assert.equal(await request('/memories/test', { method: 'DELETE' }), undefined);
+});
+
+test('chat sends the chosen model tier with each request', async () => {
+  const tiers = [];
+  globalThis.fetch = async (_, options) => {
+    tiers.push(JSON.parse(options.body).model_tier);
+    return responseFor('event: done\ndata: {"status":"completed"}\n\n');
+  };
+  for (const tier of ['fast', 'normal']) {
+    await streamChat('test', 's1', new AbortController().signal, () => {}, tier);
+  }
+  assert.deepEqual(tiers, ['fast', 'normal']);
 });

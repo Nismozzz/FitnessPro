@@ -21,7 +21,7 @@ from app.context.compressor import context_compressor
 from app.conversation import repository as repo
 from app.database.models import new_id
 from app.evaluation.service import evaluation_service
-from app.llm.provider import get_llm
+from app.llm.provider import Tier, get_llm
 from app.memory.extractor import extract_memories
 from app.utils.background import spawn
 from app.observability.context import trace_scope, trace_context
@@ -57,16 +57,16 @@ class AgentService:
         return session.id
 
     def start_turn(
-        self, *, user_id: str, session_id: str, message: str
+        self, *, user_id: str, session_id: str, message: str, model_tier: Tier = "normal"
     ) -> asyncio.Queue[AgentEvent | None]:
         """启动一轮对话，返回事件队列；队列以 None 结尾。调用前必须完成 prepare_session。"""
         queue: asyncio.Queue[AgentEvent | None] = asyncio.Queue()
         with trace_scope(user_id=user_id, session_id=session_id, module="agent"):
-            spawn(self._run_turn(user_id, session_id, message, queue), name=f"turn:{session_id}")
+            spawn(self._run_turn(user_id, session_id, message, queue, model_tier), name=f"turn:{session_id}")
         return queue
 
     async def _run_turn(
-        self, user_id: str, session_id: str, message: str, queue: asyncio.Queue
+        self, user_id: str, session_id: str, message: str, queue: asyncio.Queue, model_tier: Tier = "normal"
     ) -> None:
         terminal_sent = False
         final_answer = ""
@@ -83,7 +83,7 @@ class AgentService:
                 await repo.append_messages(session_id, turn_id, [{"role": "user", "content": message}])
 
                 loop = AgentLoop(
-                    get_llm("normal"),
+                    get_llm(model_tier),
                     ToolExecutor(self._tools, default_timeout=settings.agent.tool_timeout),
                     settings.agent,
                     tool_result_max_tokens=settings.context.tool_result_max_tokens,

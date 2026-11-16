@@ -23,6 +23,7 @@ import uuid
 from collections.abc import AsyncIterator
 from typing import Any
 
+from app.agent.citations import EvidenceRegistry, KNOWLEDGE_TOOLS
 from app.agent.tools.base import ToolContext, ToolExecutor
 from app.agent.types import AgentEvent, ToolCall
 from app.config import AgentSettings
@@ -65,6 +66,7 @@ class AgentLoop:
         messages：本次执行的工作上下文（会被追加）。
         transcript：需要持久化的新消息（assistant / tool），由调用方保存。
         """
+        evidence = EvidenceRegistry()
         tools = self.executor.schemas() or None
         deadline = time.monotonic() + self.cfg.total_timeout
         usage = {"prompt_tokens": 0, "completion_tokens": 0}
@@ -130,7 +132,13 @@ class AgentLoop:
                 logger.exception("LLM 调用失败 session=%s iteration=%d", ctx.session_id, iteration)
                 partial = "".join(content_parts)
                 if partial and not pending:
-                    transcript.append({"role": "assistant", "content": partial})
+                    cleaned, citations, invalid = evidence.resolve(partial)
+                    if cleaned != partial:
+                        yield AgentEvent("content_reset", {})
+                        yield AgentEvent("content", {"delta": cleaned})
+                    if citations or invalid:
+                        yield AgentEvent("citations", {"citations": citations, "invalid_ids": invalid})
+                    transcript.append({"role": "assistant", "content": cleaned})
                 timed_out = isinstance(exc, TimeoutError)
                 yield AgentEvent("error", {"message": "本次任务处理超时" if timed_out else f"模型调用失败：{type(exc).__name__}"})
                 yield self._done("timeout" if timed_out else "error", iteration, usage, tool_calls_count)
@@ -139,14 +147,26 @@ class AgentLoop:
             content = "".join(content_parts)
 
             if not pending:
-                transcript.append({"role": "assistant", "content": content})
+                cleaned, citations, invalid = evidence.resolve(content)
+                if cleaned != content:
+                    yield AgentEvent("content_reset", {})
+                    yield AgentEvent("content", {"delta": cleaned})
+                if citations or invalid:
+                    yield AgentEvent("citations", {"citations": citations, "invalid_ids": invalid})
+                transcript.append({"role": "assistant", "content": cleaned})
                 yield self._done("completed", iteration, usage, tool_calls_count)
                 return
 
             if last_round:
                 # 已禁止工具调用但模型仍然返回了调用：结束本轮，保留已有文本
+                cleaned, citations, invalid = evidence.resolve(content)
+                if cleaned != content:
+                    yield AgentEvent("content_reset", {})
+                    yield AgentEvent("content", {"delta": cleaned})
+                if citations or invalid:
+                    yield AgentEvent("citations", {"citations": citations, "invalid_ids": invalid})
                 transcript.append(
-                    {"role": "assistant", "content": content or "（本次任务步骤过多，未能完成，请缩小问题范围后重试）"}
+                    {"role": "assistant", "content": cleaned or "（本次任务步骤过多，未能完成，请缩小问题范围后重试）"}
                 )
                 yield AgentEvent("error", {"message": "达到最大推理轮数"})
                 yield self._done("max_iterations", iteration, usage, tool_calls_count)
@@ -202,7 +222,10 @@ class AgentLoop:
                     yield AgentEvent("error", {"message": "本次任务处理超时，请查看周训练计划页确认草稿是否已保存"})
                     yield self._done("timeout", iteration, usage, tool_calls_count)
                     return
-                content_str = result.to_content(self.tool_result_max_tokens)
+                if result.success and call.name in KNOWLEDGE_TOOLS and isinstance(result.data, dict):
+                    content_str = evidence.tool_content(result.data, self.tool_result_max_tokens)
+                else:
+                    content_str = result.to_content(self.tool_result_max_tokens)
                 messages.append({"role": "tool", "tool_call_id": call.id, "content": content_str})
                 transcript.append(
                     {"role": "tool", "tool_call_id": call.id, "name": call.name, "content": content_str}

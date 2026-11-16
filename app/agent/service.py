@@ -24,6 +24,7 @@ from app.evaluation.service import evaluation_service
 from app.llm.provider import get_llm
 from app.memory.extractor import extract_memories
 from app.utils.background import spawn
+from app.observability.context import trace_scope, trace_context
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +61,8 @@ class AgentService:
     ) -> asyncio.Queue[AgentEvent | None]:
         """启动一轮对话，返回事件队列；队列以 None 结尾。调用前必须完成 prepare_session。"""
         queue: asyncio.Queue[AgentEvent | None] = asyncio.Queue()
-        spawn(self._run_turn(user_id, session_id, message, queue), name=f"turn:{session_id}")
+        with trace_scope(user_id=user_id, session_id=session_id, module="agent"):
+            spawn(self._run_turn(user_id, session_id, message, queue), name=f"turn:{session_id}")
         return queue
 
     async def _run_turn(
@@ -70,7 +72,7 @@ class AgentService:
         final_answer = ""
         try:
             async with self._lock(session_id):
-                await queue.put(AgentEvent("session", {"session_id": session_id}))
+                await queue.put(AgentEvent("session", {"session_id": session_id, "request_id": trace_context.get().request_id if trace_context.get() else None}))
 
                 built = await self._builder.build(
                     session_id=session_id, user_id=user_id, user_message=message

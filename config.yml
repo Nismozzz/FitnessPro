@@ -88,7 +88,7 @@ agent:
 # 只评估本轮调用过动作库检索工具的回答；无参考答案，仅支持 faithfulness / answer_relevancy
 # -----------------------------------------------------------------------------
 evaluation:
-  enabled: true
+  enabled: false
   sample_rate: 1.0          # 抽样比例 0~1
   llm_tier: "fast"          # 评审模型档位
   timeout_seconds: 300
@@ -109,3 +109,13 @@ auth:
   jwt_secret_env: "JWT_SECRET"
   jwt_algorithm: "HS256"
   access_token_minutes: 10080
+
+# 可观测性：管理员由服务端指定用户 id，前端不能自行提权。
+observability:
+  admin_user_ids: []
+  currency: CNY
+  # 每百万 token 单价；填入实际供应商价格，未配置的模型显示“未定价”。
+  # model_prices:
+  #   your-model-name: {input_per_million: 1.0, output_per_million: 2.0}
+  model_prices: {}
+  offline_report_path: eval/results/retrieval/retrieval_report.json

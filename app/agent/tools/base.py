@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, ClassVar
@@ -131,6 +132,22 @@ class ToolExecutor:
         return [t.schema() for t in self._tools.values()]
 
     async def execute(self, call: ToolCall, ctx: ToolContext) -> ToolResult:
+        from app.database.models import ToolCallLog
+        from app.observability.recorder import record
+        from app.observability.context import trace_scope
+        start = time.perf_counter()
+        result = None
+        with trace_scope(user_id=ctx.user_id, session_id=ctx.session_id):
+            try:
+                result = await self._execute(call, ctx)
+                return result
+            finally:
+                record(ToolCallLog, tool_name=call.name,
+                       success=result.success if result else False,
+                       latency_ms=(time.perf_counter() - start) * 1000,
+                       error=result.error if result else "cancelled")
+
+    async def _execute(self, call: ToolCall, ctx: ToolContext) -> ToolResult:
         tool = self._tools.get(call.name)
         if tool is None:
             return ToolResult(False, error=f"未知工具：{call.name}，可用工具：{', '.join(self._tools)}")

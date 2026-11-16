@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta, timezone
+from dataclasses import replace
+from uuid import uuid4
 
 import bcrypt
 import jwt
@@ -9,6 +11,7 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.config import settings
+from app.observability.context import TraceContext, trace_context
 from app.database.models import User
 from app.database.session import SessionLocal
 
@@ -61,4 +64,6 @@ async def get_current_user_id(
     async with SessionLocal() as db:
         if await db.get(User, user_id) is None:
             raise unauthorized
+    ctx = trace_context.get() or TraceContext(request_id=uuid4().hex)
+    trace_context.set(replace(ctx, user_id=user_id))
     return user_id

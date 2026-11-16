@@ -9,6 +9,9 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
+from app.observability.context import trace_scope
+from uuid import uuid4
+
 from app.agent.service import SessionNotFound, agent_service
 from app.agent.types import AgentEvent
 from app.auth.security import get_current_user_id
@@ -35,7 +38,9 @@ async def chat(body: ChatRequest, user_id: str = Depends(get_current_user_id)) -
     except SessionNotFound:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "会话不存在")
 
-    queue = agent_service.start_turn(user_id=user_id, session_id=session_id, message=body.message)
+    request_id = uuid4().hex
+    with trace_scope(request_id=request_id, user_id=user_id, session_id=session_id):
+        queue = agent_service.start_turn(user_id=user_id, session_id=session_id, message=body.message)
 
     async def stream() -> AsyncIterator[str]:
         while True:
@@ -47,7 +52,7 @@ async def chat(body: ChatRequest, user_id: str = Depends(get_current_user_id)) -
     return StreamingResponse(
         stream(),
         media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "X-Request-ID": request_id},
     )
 
 

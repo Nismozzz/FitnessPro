@@ -102,6 +102,8 @@ class RagasScorer:
             timeout=profile.timeout,
             max_retries=2,
         )
+        from app.observability.sdk import observe_sdk_client
+        observe_sdk_client(client, "evaluation")
         extra_body = {**profile.extra_body, **self.cfg.llm_extra_body}
         llm = llm_factory(
             profile.model,

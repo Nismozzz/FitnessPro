@@ -16,6 +16,7 @@ from app.context.history import rows_to_groups, serialize_groups
 from app.context.prompts import COMPRESS_SYSTEM, COMPRESS_USER
 from app.conversation import repository as repo
 from app.llm.provider import get_llm
+from app.observability.context import traced_module
 from app.llm.tokens import truncate_to_tokens
 
 logger = logging.getLogger(__name__)
@@ -36,6 +37,7 @@ class ContextCompressor:
         groups = rows_to_groups(rows, settings.context.history_tool_result_tokens)
         return sum(g.tokens for g in groups)
 
+    @traced_module("compress")
     async def compress(self, session_id: str, *, target_tokens: int) -> bool:
         cfg = settings.context
         async with self._lock(session_id):

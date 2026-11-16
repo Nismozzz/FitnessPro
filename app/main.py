@@ -10,11 +10,12 @@ from fastapi.responses import JSONResponse
 from app.training.service import TrainingError
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import agent, auth, evaluations, knowledge, memories, users, training
+from app.api import agent, auth, evaluations, knowledge, memories, users, training, observability
 from app.config import settings
 from app.database.session import engine, init_db
 from app.rag.retriever import init_retriever
 from app.utils.background import drain
+from app.observability.middleware import RequestTraceMiddleware
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
@@ -29,16 +30,18 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="FitnessPro", version="0.1.0", lifespan=lifespan)
+app.add_middleware(RequestTraceMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Request-ID"],
 )
 
 api = APIRouter(prefix="/api/v1")
-for module in (auth, users, memories, agent, knowledge, training, evaluations):
+for module in (auth, users, memories, agent, knowledge, training, evaluations, observability):
     api.include_router(module.router)
 app.include_router(api)
 

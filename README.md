@@ -172,20 +172,20 @@ token 为估算值；表结构由 create_all 创建，正式环境应引入 Alem
 - [x] 测试
 
 ### 阶段 2：根据记录自动调整计划
-- [ ] 渐进超负荷规则
-- [ ] 停滞检测与动作替换
-- [ ] `suggest_next_week` 工具
+- [x] 渐进超负荷规则
+- [x] 停滞检测与动作替换
+- [x] `suggest_next_week` 工具
 
 ### 阶段 3：评测
-- [ ] 检索评测集与脚本
-- [ ] Agent 评测集与脚本
-- [ ] 评测结果写入 README / 简历
+- [x] 检索评测集与脚本
+- [x] Agent 评测集与脚本
+- [ ] 评测结果写入 README
 
 ### 阶段 4：可观测性与 Dashboard
-- [ ] LLM 调用记录落库
-- [ ] 统一 request_id 贯穿请求
-- [ ] 检索与工具调用记录
-- [ ] 前端 Dashboard
+- [x] LLM 调用记录落库（Agent / 摘要 / 记忆 / 翻译 / RAGAS）
+- [x] 统一 request_id 贯穿请求与后台任务
+- [x] 检索与工具调用记录（含失败、中断与降级）
+- [x] 前端 Dashborad：运行监控 / RAGAS 评估双页签
 
 ### 阶段 5：Docker 部署
 - [ ] 后端 Dockerfile

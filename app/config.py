@@ -163,6 +163,19 @@ class AuthSettings(BaseModel):
         return self._fallback_secret
 
 
+class ModelPrice(BaseModel):
+    # Currency units per million tokens; unset models are explicitly unpriced.
+    input_per_million: float = Field(ge=0)
+    output_per_million: float = Field(ge=0)
+
+
+class ObservabilitySettings(BaseModel):
+    admin_user_ids: list[str] = Field(default_factory=list)
+    currency: str = "CNY"
+    model_prices: dict[str, ModelPrice] = Field(default_factory=dict)
+    offline_report_path: str = "eval/results/retrieval/retrieval_report.json"
+
+
 class Settings(BaseModel):
     timezone: str = "Asia/Shanghai"
     cors_origins: list[str] = Field(default_factory=list)
@@ -174,6 +187,7 @@ class Settings(BaseModel):
     context: ContextSettings = Field(default_factory=ContextSettings)
     memory: MemorySettings = Field(default_factory=MemorySettings)
     agent: AgentSettings = Field(default_factory=AgentSettings)
+    observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)
     evaluation: EvaluationSettings = Field(default_factory=EvaluationSettings)
     data: DataSettings = Field(default_factory=DataSettings)
     auth: AuthSettings = Field(default_factory=AuthSettings)

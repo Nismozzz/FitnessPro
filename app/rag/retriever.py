@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from collections import OrderedDict, defaultdict
 from dataclasses import dataclass, field
 
@@ -158,6 +159,33 @@ class ExerciseRetriever:
         return vec
 
     async def search(
+        self, query: str, filters: ExerciseFilter | None = None, top_k: int | None = None,
+        *, mode: str = "hybrid", rerank: bool | None = None,
+    ) -> SearchResult:
+        from app.database.models import RetrievalLog
+        from app.observability.recorder import record
+        start = time.perf_counter()
+        result, error = None, None
+        filters = filters or ExerciseFilter()
+        try:
+            result = await self._search(query, filters, top_k, mode=mode, rerank=rerank)
+            return result
+        except BaseException as exc:
+            error = type(exc).__name__
+            raise
+        finally:
+            degraded = bool(result and result.total_candidates and query.strip()) and (
+                (mode == "hybrid" and (result is None or not result.mode.startswith("hybrid")))
+                or (mode == "dense" and (result is None or not result.mode.startswith("dense")))
+                or bool(result and any("暂不可用" in w for w in result.warnings))
+            )
+            record(RetrievalLog, query=query, filters=filters.model_dump(mode="json"),
+                   mode=result.mode if result else mode, candidates=result.total_candidates if result else 0,
+                   hit_ids=[h.doc.id for h in result.hits] if result else [],
+                   latency_ms=(time.perf_counter() - start) * 1000, degraded=degraded,
+                   status="error" if error else "success", error=error)
+
+    async def _search(
         self, query: str, filters: ExerciseFilter | None = None, top_k: int | None = None,
         *, mode: str = "hybrid", rerank: bool | None = None,
     ) -> SearchResult:

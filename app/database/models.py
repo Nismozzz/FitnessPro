@@ -240,3 +240,44 @@ class RagEvaluation(Base):
     duration_ms: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     evaluated_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+class TraceRecord:
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    request_id: Mapped[str] = mapped_column(String(32), index=True)
+    user_id: Mapped[str | None] = mapped_column(String(32), index=True)
+    session_id: Mapped[str | None] = mapped_column(String(32), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, index=True)
+
+
+class LLMCall(TraceRecord, Base):
+    __tablename__ = "llm_calls"
+    module: Mapped[str] = mapped_column(String(32))
+    model: Mapped[str] = mapped_column(String(128))
+    prompt_tokens: Mapped[int | None] = mapped_column(Integer)
+    completion_tokens: Mapped[int | None] = mapped_column(Integer)
+    latency_ms: Mapped[float]
+    first_token_ms: Mapped[float | None]
+    status: Mapped[str] = mapped_column(String(16))
+    error: Mapped[str | None] = mapped_column(String(128))
+
+
+class ToolCallLog(TraceRecord, Base):
+    __tablename__ = "tool_calls"
+    tool_name: Mapped[str] = mapped_column(String(128))
+    success: Mapped[bool]
+    latency_ms: Mapped[float]
+    error: Mapped[str | None] = mapped_column(Text)
+
+
+class RetrievalLog(TraceRecord, Base):
+    __tablename__ = "retrieval_logs"
+    query: Mapped[str] = mapped_column(Text)
+    filters: Mapped[dict] = mapped_column(JSON)
+    mode: Mapped[str] = mapped_column(String(32))
+    candidates: Mapped[int] = mapped_column(Integer)
+    hit_ids: Mapped[list] = mapped_column(JSON)
+    latency_ms: Mapped[float]
+    degraded: Mapped[bool] = mapped_column(default=False)
+    status: Mapped[str] = mapped_column(String(16), default="success")
+    error: Mapped[str | None] = mapped_column(String(128))

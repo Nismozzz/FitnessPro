@@ -51,3 +51,17 @@ test('chat sends the chosen model tier with each request', async () => {
   }
   assert.deepEqual(tiers, ['fast', 'normal']);
 });
+
+test('chat preserves default, empty, and explicit tool selections', async () => {
+  const bodies = [];
+  globalThis.fetch = async (_, options) => {
+    bodies.push(JSON.parse(options.body));
+    return responseFor('event: done\ndata: {"status":"completed"}\n\n');
+  };
+  for (const selection of [null, [], ['get_current_time']]) {
+    await streamChat('test', 's1', new AbortController().signal, () => {}, 'normal', selection);
+  }
+  assert.equal(Object.hasOwn(bodies[0], 'selected_tools'), false);
+  assert.deepEqual(bodies[1].selected_tools, []);
+  assert.deepEqual(bodies[2].selected_tools, ['get_current_time']);
+});

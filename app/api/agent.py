@@ -26,6 +26,7 @@ class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=4000)
     session_id: str | None = None
     model_tier: Tier = "normal"
+    selected_tools: list[str] | None = Field(default=None, max_length=100)
 
 
 def _sse(event: AgentEvent) -> str:
@@ -33,9 +34,18 @@ def _sse(event: AgentEvent) -> str:
     return f"event: {event.type}\ndata: {data}\n\n"
 
 
+@router.get("/tools")
+async def list_tools(user_id: str = Depends(get_current_user_id)) -> list[dict[str, Any]]:
+    return agent_service.tool_catalog()
+
+
 @router.post("/chat")
 async def chat(body: ChatRequest, user_id: str = Depends(get_current_user_id)) -> StreamingResponse:
     """SSE 流式对话。事件：session / context / content_reset / content / tool_call / tool_result / citations / error / done。"""
+    try:
+        agent_service.select_tools(body.selected_tools)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc))
     try:
         session_id = await agent_service.prepare_session(user_id, body.session_id, body.message)
     except SessionNotFound:
@@ -44,7 +54,7 @@ async def chat(body: ChatRequest, user_id: str = Depends(get_current_user_id)) -
     request_id = uuid4().hex
     with trace_scope(request_id=request_id, user_id=user_id, session_id=session_id):
         queue = agent_service.start_turn(
-            user_id=user_id, session_id=session_id, message=body.message, model_tier=body.model_tier
+            user_id=user_id, session_id=session_id, message=body.message, model_tier=body.model_tier, selected_tools=body.selected_tools
         )
 
     async def stream() -> AsyncIterator[str]:

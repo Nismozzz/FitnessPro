@@ -44,6 +44,26 @@ class AgentService:
         self._tools = build_default_tools()
         self._builder = ContextBuilder()
 
+    def select_tools(self, names: list[str] | None):
+        if names is None:
+            return list(self._tools)
+        unknown = set(names) - {tool.name for tool in self._tools}
+        if unknown:
+            raise ValueError("未知工具：" + ", ".join(sorted(unknown)))
+        return [tool for tool in self._tools if tool.name in names]
+
+    def tool_catalog(self) -> list[dict[str, Any]]:
+        import os
+        return [
+            {"name": tool.name, "description": tool.description,
+             "side_effect": tool.side_effect,
+             "available": tool.name != "web_search" or bool(
+                 settings.web_search.enabled and os.getenv(settings.web_search.api_key_env)),
+             "unavailable_reason": "请先配置并启用联网搜索" if tool.name == "web_search" and not (
+                 settings.web_search.enabled and os.getenv(settings.web_search.api_key_env)) else None}
+            for tool in self._tools
+        ]
+
     def _lock(self, session_id: str) -> asyncio.Lock:
         return self._locks.setdefault(session_id, asyncio.Lock())
 
@@ -57,16 +77,16 @@ class AgentService:
         return session.id
 
     def start_turn(
-        self, *, user_id: str, session_id: str, message: str, model_tier: Tier = "normal"
+        self, *, user_id: str, session_id: str, message: str, model_tier: Tier = "normal", selected_tools: list[str] | None = None
     ) -> asyncio.Queue[AgentEvent | None]:
         """启动一轮对话，返回事件队列；队列以 None 结尾。调用前必须完成 prepare_session。"""
         queue: asyncio.Queue[AgentEvent | None] = asyncio.Queue()
         with trace_scope(user_id=user_id, session_id=session_id, module="agent"):
-            spawn(self._run_turn(user_id, session_id, message, queue, model_tier), name=f"turn:{session_id}")
+            spawn(self._run_turn(user_id, session_id, message, queue, model_tier, selected_tools), name=f"turn:{session_id}")
         return queue
 
     async def _run_turn(
-        self, user_id: str, session_id: str, message: str, queue: asyncio.Queue, model_tier: Tier = "normal"
+        self, user_id: str, session_id: str, message: str, queue: asyncio.Queue, model_tier: Tier = "normal", selected_tools: list[str] | None = None
     ) -> None:
         terminal_sent = False
         final_answer = ""
@@ -84,7 +104,7 @@ class AgentService:
 
                 loop = AgentLoop(
                     get_llm(model_tier),
-                    ToolExecutor(self._tools, default_timeout=settings.agent.tool_timeout),
+                    ToolExecutor(self.select_tools(selected_tools), default_timeout=settings.agent.tool_timeout),
                     settings.agent,
                     tool_result_max_tokens=settings.context.tool_result_max_tokens,
                 )

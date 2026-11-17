@@ -12,8 +12,8 @@ export async function request<T>(path: string, options: RequestInit = {}): Promi
   }
   return response.status === 204 ? undefined as T : response.json();
 }
-export async function streamChat(message: string, session_id: string | null, signal: AbortSignal, onEvent: (event: string, data: Record<string, unknown>) => void, modelTier: ModelTier = 'normal') {
-  const response = await fetch('/api/v1/agent/chat', { method: 'POST', signal, headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem(TOKEN_KEY)}` }, body: JSON.stringify({ message, session_id, model_tier: modelTier }) });
+export async function streamChat(message: string, session_id: string | null, signal: AbortSignal, onEvent: (event: string, data: Record<string, unknown>) => void, modelTier: ModelTier = 'normal', selectedTools: string[] | null = null) {
+  const response = await fetch('/api/v1/agent/chat', { method: 'POST', signal, headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem(TOKEN_KEY)}` }, body: JSON.stringify({ message, session_id, model_tier: modelTier, ...(selectedTools === null ? {} : { selected_tools: selectedTools }) }) });
   if (!response.ok) { const data = await response.json().catch(() => ({})); throw new ApiError(data.detail || '对话请求失败', response.status); }
   if (!response.body) throw new Error('浏览器不支持流式响应');
   const reader = response.body.getReader(), decoder = new TextDecoder();

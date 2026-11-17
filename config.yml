@@ -119,3 +119,9 @@ observability:
   #   your-model-name: {input_per_million: 1.0, output_per_million: 2.0}
   model_prices: {}
   offline_report_path: eval/results/retrieval/retrieval_report.json
+
+# 联网搜索（DeepSeek Search 官方 API（deepseek_research）；不抓取用户提供的 URL）
+web_search:
+  enabled: true
+  api_key_env: DEEPSEEK_SEARCH_API_KEY  # 复用 DeepSeek Key，也可改为独立环境变量名
+  timeout: 15

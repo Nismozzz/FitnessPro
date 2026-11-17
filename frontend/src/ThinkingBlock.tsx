@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Activity, Check, LoaderCircle, X } from 'lucide-react';
+import { WebSearchSources } from './WebSearchSources';
 import type { Execution } from './execution';
 
 const statusLabels: Record<string, string> = { running: '执行中', success: '成功', error: '失败', interrupted: '已中断' };
@@ -30,6 +31,7 @@ export function ThinkingBlock({ execution, labels }: { execution?: Execution; la
         </div>
         <code>{step.name}</code>
         <details><summary>调用参数</summary><pre>{format(step.arguments)}</pre></details>
+        {step.name === 'web_search' && step.status === 'success' && <WebSearchSources result={step.result}/>}
         {step.result !== undefined && <details><summary>执行结果</summary><pre>{format(step.result)}</pre></details>}
         {step.error && <p className="execution-error">{step.error}</p>}
       </section>)}

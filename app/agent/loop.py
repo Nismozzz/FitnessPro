@@ -16,6 +16,7 @@ Agent 执行循环（Function Calling 风格的 ReAct）。
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 import json
 import logging
 import time
@@ -204,6 +205,10 @@ class AgentLoop:
             messages.append(working_msg)
             transcript.append(assistant_msg)
 
+            # Lock the whole batch before executing anything, even if a write is
+            # listed before web_search. This immutable context persists this turn.
+            if any(call.name == "web_search" for call in calls):
+                ctx = replace(ctx, allow_side_effects=False)
             for call in calls:
                 tool_calls_count += 1
                 yield AgentEvent(

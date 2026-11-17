@@ -176,6 +176,16 @@ class ObservabilitySettings(BaseModel):
     offline_report_path: str = "eval/results/retrieval/retrieval_report.json"
 
 
+class WebSearchSettings(BaseModel):
+    enabled: bool = False
+    api_key_env: str = "LLM_API_KEY"
+    timeout: float = Field(default=15.0, gt=0, le=30)
+
+    @property
+    def api_key(self) -> str:
+        return os.getenv(self.api_key_env, "")
+
+
 class Settings(BaseModel):
     timezone: str = "Asia/Shanghai"
     cors_origins: list[str] = Field(default_factory=list)
@@ -186,6 +196,7 @@ class Settings(BaseModel):
     retrieval: RetrievalSettings = Field(default_factory=RetrievalSettings)
     context: ContextSettings = Field(default_factory=ContextSettings)
     memory: MemorySettings = Field(default_factory=MemorySettings)
+    web_search: WebSearchSettings = Field(default_factory=WebSearchSettings)
     agent: AgentSettings = Field(default_factory=AgentSettings)
     observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)
     evaluation: EvaluationSettings = Field(default_factory=EvaluationSettings)

@@ -85,7 +85,7 @@ agent:
 
 # -----------------------------------------------------------------------------
 # RAGAS 在线评估（后台异步，不阻塞对话；需要 pip install ragas）
-# 只评估本轮调用过动作库检索工具的回答；无参考答案，仅支持 faithfulness / answer_relevancy
+# 只评估本轮调用过动作/文献库检索工具的回答；无参考答案，仅支持 faithfulness / answer_relevancy
 # -----------------------------------------------------------------------------
 evaluation:
   enabled: false
@@ -125,3 +125,9 @@ web_search:
   enabled: true
   api_key_env: DEEPSEEK_SEARCH_API_KEY  # 复用 DeepSeek Key，也可改为独立环境变量名
   timeout: 15
+
+# 独立文献库（不覆盖动作索引）
+knowledge:
+  raw_dir: data/knowledge/raw
+  index_dir: data/knowledge/index
+  chunk_size: 900

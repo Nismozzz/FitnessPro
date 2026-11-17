@@ -1,0 +1,27 @@
+{
+  "01_容量管理_周训练容量与肌肥大的剂量效应关系.md": {
+    "source_url": "https://doi.org/10.1080/02640414.2016.1210197",
+    "metadata_verification": "Crossref title and DOI match; full text not verified",
+    "review_note": "摘要未核对全文。摘录将每周10+组称为最大化阈值，但同时记录高容量优势对敏感性分析不稳健；不得外推为所有人的硬性最低标准。"
+  },
+  "02_频率优化_抗阻训练频率对肌肥大的影响.md": {
+    "source_url": "https://doi.org/10.1007/s40279-016-0543-8",
+    "metadata_verification": "Crossref title and DOI match; full text not verified",
+    "review_note": "摘要未核对全文。2016年证据只覆盖每肌群每周1–3次；须区分每肌群频率与训练课次，不得称为最新共识。"
+  },
+  "03_负荷选择_低负荷与高负荷抗阻训练的力量与肌肥大适应.md": {
+    "source_url": "https://doi.org/10.1519/jsc.0000000000002200",
+    "metadata_verification": "Crossref title and DOI match; full text not verified",
+    "review_note": "摘要未核对全文。纳入研究要求力竭；肌肥大组间统计不显著不等于已证明等效，60%分组边界不是确定生理阈值。"
+  },
+  "04_体重管理_TRE限时进食与能量限制对人体测量和身体成分的影响.md": {
+    "source_url": "https://doi.org/10.1186/s12966-025-01812-w",
+    "metadata_verification": "Crossref title and DOI match; full text not verified",
+    "review_note": "摘要未核对全文。核心摘要称TRE+ER较ER无额外减重获益，但亚组段落列WMD=-0.94kg且p=0.004，存在表述冲突，须回原文核对，不能自行裁定。蛋白质≥2g/kg及机制表述不视为已核验处方或因果证据。"
+  },
+  "05_减脂训练_有氧、抗阻与并行训练减脂效果的系统综述与元分析.md": {
+    "source_url": "https://doi.org/10.1080/15502783.2025.2507949",
+    "metadata_verification": "Crossref title and DOI match; full text not verified",
+    "review_note": "摘要未核对全文。等功匹配和调度比较的统计不显著不等于证明等效或完全无影响；部分结论依赖个别研究，须保留敏感性分析局限。"
+  }
+}

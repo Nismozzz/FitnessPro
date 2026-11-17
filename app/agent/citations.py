@@ -9,7 +9,7 @@ from typing import Any
 from app.llm.tokens import estimate_tokens
 
 MARKER = re.compile(r"\[(E[A-Za-z0-9_]+)\]")
-KNOWLEDGE_TOOLS = {"search_exercises", "get_exercise_detail"}
+KNOWLEDGE_TOOLS = {"search_exercises", "get_exercise_detail", "search_knowledge_articles"}
 FIELDS = {
     "name": "英文名称", "name_zh": "中文名称", "equipment": "器械",
     "level": "难度", "primary_muscles": "主要肌群", "secondary_muscles": "次要肌群",
@@ -27,6 +27,8 @@ class EvidenceRegistry:
         self.evidence: dict[str, dict[str, Any]] = {}
 
     def tool_content(self, data: dict, max_tokens: int) -> str:
+        if "articles" in data:
+            return self.article_content(data, max_tokens)
         # 按完整字段/步骤准入，永不截断 JSON 或证据原文。
         payload = {"ok": True, "data": {k: v for k, v in data.items() if k != "exercises"}}
         payload["data"].update(exercises=[], evidence=[], evidence_note="事实后引用 [证据id]；未返回的字段不可补写。")
@@ -90,6 +92,32 @@ class EvidenceRegistry:
             for key in admitted:
                 self.evidence.pop(key, None)
             return encode({"ok": True, "data": {"exercises": [], "evidence": []}})
+        return encode(payload)
+
+    def article_content(self, data: dict, max_tokens: int) -> str:
+        payload = {"ok": True, "data": {"articles": [], "evidence": [],
+                   "warnings": data.get("warnings", []), "notice": data.get("notice", ""),
+                   "evidence_note": "文献结论引用 [证据id]，须保留条件、局限与待核对说明。"}}
+        output = payload["data"]
+        for article in data.get("articles", []):
+            evidence_id = f"E{self.prefix}_{len(self.evidence) + 1}"
+            snapshot = {
+                "id": evidence_id, "source_type": "article", "article_id": article["article_id"],
+                "chunk_id": article["id"], "title": article["title"], "authors": article["authors"],
+                "source_url": article["source_url"], "field": article["id"],
+                "label": article["section"], "text": article["text"], "language": "zh",
+                "review_note": article["review_note"],
+            }
+            # 原文只存一份，降低重复元数据造成的证据预算占用。
+            output["evidence"].append(snapshot)
+            output["articles"].append({"id": article["id"], "evidence_id": evidence_id})
+            if estimate_tokens(encode(payload)) > max_tokens:
+                output["evidence"].pop()
+                output["articles"].pop()
+            else:
+                self.evidence[evidence_id] = snapshot
+        if estimate_tokens(encode(payload)) > max_tokens:
+            return encode({"ok": True, "data": {"articles": [], "evidence": []}})
         return encode(payload)
 
     def resolve(self, content: str) -> tuple[str, list[dict], list[str]]:

@@ -4,6 +4,7 @@ from app.agent.tools.base import BaseTool
 
 
 def build_default_tools() -> list[BaseTool]:
+    from app.agent.tools.article_tools import SearchKnowledgeArticlesTool
     from app.agent.tools.exercise_tools import GetExerciseDetailTool, SearchExercisesTool
     from app.agent.tools.memory_tools import ConfirmMemoryTool, ForgetMemoryTool, SaveMemoryTool
     from app.agent.tools.profile_tools import GetUserProfileTool, UpdateUserProfileTool
@@ -15,6 +16,7 @@ def build_default_tools() -> list[BaseTool]:
     return [
         DraftWeeklyPlanTool(), SavePlanTool(), GetActivePlanTool(), UpdatePlanExerciseTool(), LogWorkoutTool(), GetTrainingStatsTool(),
         SearchExercisesTool(),
+        SearchKnowledgeArticlesTool(),
         GetExerciseDetailTool(),
         GetUserProfileTool(),
         UpdateUserProfileTool(),

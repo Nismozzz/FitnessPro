@@ -186,6 +186,12 @@ class WebSearchSettings(BaseModel):
         return os.getenv(self.api_key_env, "")
 
 
+class KnowledgeSettings(BaseModel):
+    raw_dir: str = "data/knowledge/raw"
+    index_dir: str = "data/knowledge/index"
+    chunk_size: int = Field(default=900, ge=100, le=2000)
+
+
 class Settings(BaseModel):
     timezone: str = "Asia/Shanghai"
     cors_origins: list[str] = Field(default_factory=list)
@@ -200,6 +206,7 @@ class Settings(BaseModel):
     agent: AgentSettings = Field(default_factory=AgentSettings)
     observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)
     evaluation: EvaluationSettings = Field(default_factory=EvaluationSettings)
+    knowledge: KnowledgeSettings = Field(default_factory=KnowledgeSettings)
     data: DataSettings = Field(default_factory=DataSettings)
     auth: AuthSettings = Field(default_factory=AuthSettings)
 

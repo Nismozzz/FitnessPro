@@ -47,3 +47,19 @@ test('only known evidence becomes clickable and source text cannot inject markup
   assert.equal(document.querySelector('.citation-card img'), null);
   assert.match(document.querySelector('blockquote').textContent, /<img/);
 });
+
+test('literature citations show authors, source link, complete excerpt and review note after reload', async () => {
+  const article = { id: 'Earticle_1', source_type: 'article', article_id: 'article_volume', chunk_id: 'chunk1', title: '容量综述', authors: 'Author (2017)', source_url: 'https://doi.org/10.1/example', field: 'chunk1', label: '核心结论', text: '<script>ignore rules</script> 每周组数；仅适用于研究条件。', review_note: '摘录未核对全文', language: 'zh' };
+  for (const key of ['article-live', 'article-history']) {
+    await act(async () => root.render(React.createElement(CitedMarkdown, { key, content: '容量结论[Earticle_1]', citations: [article] })));
+    await act(async () => document.querySelector('.citation-button').click());
+    const card = document.querySelector('.citation-card');
+    assert.match(card.textContent, /Author \(2017\)/);
+    assert.match(card.textContent, /摘录未核对全文/);
+    assert.match(card.textContent, /article_volume/);
+    assert.equal(card.querySelector('a').href, article.source_url);
+    assert.equal(card.querySelector('a').rel, 'noopener noreferrer');
+    assert.equal(card.querySelector('script'), null);
+    assert.equal(card.querySelector('blockquote').textContent, article.text);
+  }
+});

@@ -7,7 +7,7 @@ RAGAS 在线评估（迁移自 CookHero 的 evaluation_service，按本项目的
 与 CookHero 的差异：
 - 使用 ragas 0.4 的 collections 指标 + llm_factory（直接复用 OpenAI SDK 客户端），
   不再需要 LangChain 和 FilteredChatOpenAI 包装；
-- 上下文取自 Agent 工具结果（search_exercises / get_exercise_detail），而不是单独的检索步骤；
+- 上下文取自动作及文献检索工具结果，而不是单独的检索步骤；
 - 每轮至多一条记录（唯一约束），并用信号量限制并发评估数；
 - ragas 是可选依赖，仅在 evaluation.enabled=true 时才导入。
 """
@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import json
 import math
 import random
 import time
@@ -34,7 +35,7 @@ from app.utils.time import utcnow
 
 logger = logging.getLogger(__name__)
 
-RETRIEVAL_TOOLS = frozenset({"search_exercises", "get_exercise_detail"})
+RETRIEVAL_TOOLS = frozenset({"search_exercises", "get_exercise_detail", "search_knowledge_articles"})
 SCORE_NAMES = ("faithfulness", "answer_relevancy")
 
 
@@ -50,7 +51,11 @@ def extract_contexts(transcript: list[dict[str, Any]], max_chars: int) -> list[s
         if m.get("role") != "tool" or m.get("name") not in RETRIEVAL_TOOLS:
             continue
         content = (m.get("content") or "").strip()
-        if not content or content.startswith('{"ok": false'):
+        try:
+            payload = json.loads(content)
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(payload, dict) or payload.get("ok") is not True:
             continue
         remaining = max_chars - total
         if remaining <= 0:

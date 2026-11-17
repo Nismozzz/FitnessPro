@@ -14,6 +14,7 @@ from app.api import agent, auth, evaluations, knowledge, memories, users, traini
 from app.config import settings
 from app.database.session import engine, init_db
 from app.rag.retriever import init_retriever
+from app.knowledge.retriever import init_article_retriever
 from app.utils.background import drain
 from app.observability.middleware import RequestTraceMiddleware
 
@@ -24,6 +25,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 async def lifespan(_app: FastAPI):
     await init_db()
     await init_retriever()
+    init_article_retriever()
     yield
     await drain()
     await engine.dispose()

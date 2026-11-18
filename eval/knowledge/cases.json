@@ -1,0 +1,14 @@
+[
+  {"id":"volume", "query":"每周每肌群训练容量组数的剂量效应关系", "source_prefix":"01_"},
+  {"id":"volume_limit", "query":"高容量组数的敏感性分析和上限阈值", "source_prefix":"01_"},
+  {"id":"frequency", "query":"每肌群每周训练频率一次两次三次", "source_prefix":"02_"},
+  {"id":"frequency_sessions", "query":"训练课次频率与每肌群频率容量对等", "source_prefix":"02_"},
+  {"id":"load", "query":"低负荷高负荷最大力量1RM肌肥大", "source_prefix":"03_"},
+  {"id":"load_failure", "query":"瞬时力竭momentary muscular failure低负荷", "source_prefix":"03_"},
+  {"id":"tre", "query":"限时进食TRE能量限制ER减重", "source_prefix":"04_"},
+  {"id":"tre_ffm", "query":"限时进食TRE去脂体重下降", "source_prefix":"04_"},
+  {"id":"fat_loss", "query":"有氧AT抗阻RT并行CT减脂肪量", "source_prefix":"05_"},
+  {"id":"fat_loss_work", "query":"等功匹配训练模式干预十周减脂", "source_prefix":"05_"},
+  {"id":"no_sports", "query":"温布尔登赛事门票价格", "source_prefix":null},
+  {"id":"no_medicine", "query":"胰岛素注射剂量", "source_prefix":null}
+]

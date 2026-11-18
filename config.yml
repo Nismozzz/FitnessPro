@@ -20,14 +20,14 @@ llm:
     model: "deepseek-flash"
     base_url: "https://api.deepseek.com"
     api_key_env: "FAST_LLM_API_KEY"
-    temperature: 0.3
+    temperature: 0.1
     max_tokens: 8192
     timeout: 120
   normal:
     model: "deepseek-v4-pro"
     base_url: "https://api.deepseek.com"
     api_key_env: "LLM_API_KEY"
-    temperature: 0.3
+    temperature: 0.1
     max_tokens: 131072
     timeout: 120
 
@@ -83,6 +83,21 @@ agent:
   total_timeout: 600
   final_answer_reserve: 60       # 剩余预算不足时停止新增工具调用，给出已有结果
 
+# -----------------------------------------------------------------------------
+# RAGAS 在线评估（后台异步，不阻塞对话；需要 pip install ragas）
+# 只评估本轮调用过动作/文献库检索工具的回答；无参考答案，仅支持 faithfulness / answer_relevancy
+# -----------------------------------------------------------------------------
+evaluation:
+  enabled: false
+  sample_rate: 1.0          # 抽样比例 0~1
+  llm_tier: "fast"          # 评审模型档位
+  timeout_seconds: 300
+  max_concurrency: 2        # 同时进行的评估数
+  max_context_chars: 12000
+  metrics: ["faithfulness", "answer_relevancy"]
+  alert_faithfulness: 0.3
+  alert_answer_relevancy: 0.5
+
 data:
   exercises_url: "https://raw.githubusercontent.com/yuhonas/free-exercise-db/main/dist/exercises.json"
   image_base_url: "https://raw.githubusercontent.com/yuhonas/free-exercise-db/main/exercises/"
@@ -94,3 +109,25 @@ auth:
   jwt_secret_env: "JWT_SECRET"
   jwt_algorithm: "HS256"
   access_token_minutes: 10080
+
+# 可观测性：管理员由服务端指定用户 id，前端不能自行提权。
+observability:
+  admin_user_ids: []
+  currency: CNY
+  # 每百万 token 单价；填入实际供应商价格，未配置的模型显示“未定价”。
+  # model_prices:
+  #   your-model-name: {input_per_million: 1.0, output_per_million: 2.0}
+  model_prices: {}
+  offline_report_path: eval/results/retrieval/retrieval_report.json
+
+# 联网搜索（DeepSeek Search 官方 API（deepseek_research）；不抓取用户提供的 URL）
+web_search:
+  enabled: true
+  api_key_env: DEEPSEEK_SEARCH_API_KEY  # 复用 DeepSeek Key，也可改为独立环境变量名
+  timeout: 15
+
+# 独立文献库（不覆盖动作索引）
+knowledge:
+  raw_dir: data/knowledge/raw
+  index_dir: data/knowledge/index
+  chunk_size: 900

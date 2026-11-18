@@ -108,6 +108,28 @@ class AgentSettings(BaseModel):
     final_answer_reserve: float = 60.0
 
 
+class EvaluationSettings(BaseModel):
+    """RAGAS 在线评估：回答完成后在后台对检索类回答打分，不阻塞对话。"""
+
+    enabled: bool = False
+    sample_rate: float = Field(default=1.0, ge=0.0, le=1.0)
+    llm_tier: Literal["fast", "normal"] = "fast"
+    timeout_seconds: float = 300.0
+    max_concurrency: int = 2
+    max_context_chars: int = 12000
+    # 评审模型的额外请求参数。DeepSeek 思考模式会先生成上万字推理，容易撞 max_tokens 导致
+    # 结构化输出被截断并反复重试，评估应关闭思考：{"thinking": {"type": "disabled"}}
+    llm_extra_body: dict = Field(default_factory=dict)
+    llm_max_tokens: int = 8192
+    # 无参考答案时只有这两个指标可用
+    metrics: list[Literal["faithfulness", "answer_relevancy"]] = Field(
+        default_factory=lambda: ["faithfulness", "answer_relevancy"]
+    )
+    # 低于阈值的评估会输出 warning 日志
+    alert_faithfulness: float = 0.3
+    alert_answer_relevancy: float = 0.5
+
+
 class DataSettings(BaseModel):
     exercises_url: str = (
         "https://raw.githubusercontent.com/yuhonas/free-exercise-db/main/dist/exercises.json"
@@ -141,6 +163,35 @@ class AuthSettings(BaseModel):
         return self._fallback_secret
 
 
+class ModelPrice(BaseModel):
+    # Currency units per million tokens; unset models are explicitly unpriced.
+    input_per_million: float = Field(ge=0)
+    output_per_million: float = Field(ge=0)
+
+
+class ObservabilitySettings(BaseModel):
+    admin_user_ids: list[str] = Field(default_factory=list)
+    currency: str = "CNY"
+    model_prices: dict[str, ModelPrice] = Field(default_factory=dict)
+    offline_report_path: str = "eval/results/retrieval/retrieval_report.json"
+
+
+class WebSearchSettings(BaseModel):
+    enabled: bool = False
+    api_key_env: str = "LLM_API_KEY"
+    timeout: float = Field(default=15.0, gt=0, le=30)
+
+    @property
+    def api_key(self) -> str:
+        return os.getenv(self.api_key_env, "")
+
+
+class KnowledgeSettings(BaseModel):
+    raw_dir: str = "data/knowledge/raw"
+    index_dir: str = "data/knowledge/index"
+    chunk_size: int = Field(default=900, ge=100, le=2000)
+
+
 class Settings(BaseModel):
     timezone: str = "Asia/Shanghai"
     cors_origins: list[str] = Field(default_factory=list)
@@ -151,7 +202,11 @@ class Settings(BaseModel):
     retrieval: RetrievalSettings = Field(default_factory=RetrievalSettings)
     context: ContextSettings = Field(default_factory=ContextSettings)
     memory: MemorySettings = Field(default_factory=MemorySettings)
+    web_search: WebSearchSettings = Field(default_factory=WebSearchSettings)
     agent: AgentSettings = Field(default_factory=AgentSettings)
+    observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)
+    evaluation: EvaluationSettings = Field(default_factory=EvaluationSettings)
+    knowledge: KnowledgeSettings = Field(default_factory=KnowledgeSettings)
     data: DataSettings = Field(default_factory=DataSettings)
     auth: AuthSettings = Field(default_factory=AuthSettings)
 

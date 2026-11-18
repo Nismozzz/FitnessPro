@@ -1,7 +1,7 @@
 from datetime import date
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Response
 
 from app.auth.security import get_current_user_id
 from app.training import service
@@ -43,6 +43,12 @@ async def activate(plan_id: str, user_id: UserId):
     return await service.activate_plan(user_id, plan_id)
 
 
+@router.delete("/plans/{plan_id}", status_code=204)
+async def delete_plan(plan_id: str, user_id: UserId):
+    await service.delete_plan(user_id, plan_id)
+    return Response(status_code=204)
+
+
 @router.patch("/plans/{plan_id}/exercises")
 async def replace(plan_id: str, body: Replacement, user_id: UserId):
     return await service.replace_exercise(user_id, plan_id, body)
@@ -61,6 +67,12 @@ async def create_log(body: LogCreate, user_id: UserId):
 @router.get("/logs/{log_id}")
 async def log(log_id: str, user_id: UserId):
     return await service.get_log(user_id, log_id)
+
+
+@router.delete("/logs/{log_id}", status_code=204)
+async def delete_log(log_id: str, user_id: UserId):
+    await service.delete_log(user_id, log_id)
+    return Response(status_code=204)
 
 
 @router.get("/stats/weekly")

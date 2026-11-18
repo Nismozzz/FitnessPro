@@ -11,3 +11,19 @@ data/
 frontend/node_modules/
 frontend/dist/
 frontend/*.tsbuildinfo
+
+# Evaluation output artifacts
+eval/results/
+
+##补充资料
+Supplementary Information
+
+# 文献源资料与出处可版本管理，生成索引继续忽略。
+!data/
+data/*
+!data/knowledge/
+data/knowledge/*
+!data/knowledge/sources.json
+!data/knowledge/raw/
+data/knowledge/raw/*
+!data/knowledge/raw/*.md

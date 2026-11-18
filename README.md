@@ -30,11 +30,12 @@ app/
   database/       ORM 模型与会话管理
   llm/            模型调用与 token 估算
   memory/         记忆提取与服务
+  knowledge/      文献分块、元数据与独立检索
   rag/            BM25、向量库、Embedding、重排、混合检索
   training/       计划 schema、规则校验器、器械预设、训练服务、统计与渐进调整
   users/          用户档案
 frontend/         React 前端
-scripts/          动作知识库入库、命令行对话
+scripts/          动作/文献入库、检索评测、命令行对话
 tests/            后端测试
 config.yml        非敏感配置（模型、检索、上下文、记忆等参数）
 .env              敏感信息（API Key、JWT 密钥），不入库
@@ -46,11 +47,23 @@ config.yml        非敏感配置（模型、检索、上下文、记忆等参�
 - 工具调用循环（动作检索、动作详情、档案读写、记忆、计划、训练记录与统计、当前时间）。
 - SSE 流式输出，前端打字机效果，并展示模型思考过程。
 - 会话列表、历史消息查看与删除。
+- 聊天输入框下方可选择 Fast / Normal 回答模型，默认 Normal，并在当前浏览器记住选择。每轮请求通过 `model_tier` 指定档位
 
 ### 2.2 动作知识库（RAG）
 - 数据源：free-exercise-db，入库时由 fast 模型生成中文名、别名与动作要点。
 - 检索链路：过滤 → 向量 + BM25 → RRF 融合 → 重排。
 - 提供检索、动作详情、知识库统计接口。
+- 回答中的知识库事实支持可点击引用：定位到动作字段或具体步骤，展示回答时的字段值/步骤原文快照；中文步骤标明是知识库中文步骤。
+- 后端为本轮可见的完整字段分配证据编号，校验引用并剔除不存在或跨轮的编号。预算不足时按完整字段/步骤省略，不截断证据 JSON。
+- SSE `citations` 事件返回本条回答使用的证据；历史消息接口的 `citations` 从同轮已保存工具快照恢复，无需数据库迁移。上线前已有的回答没有证据快照，不补造引用。
+- 第一版校验来源编号及可见性；引用是否在语义上充分支持结论仍由提示词与忠实度评估约束，尚无逐句语义拦截。
+
+
+### 2.2.1 文献知识库
+- 原始资料：`data/knowledge/raw` 中的综述/荟萃分析核心观点摘录，独立分块与索引，不覆盖动作库。
+- Agent 通过 `search_knowledge_articles` 查询容量、频率、负荷与减脂理论依据；动作选择和动作步骤仍查询动作库。
+- 文献与动作库优先，联网仅补充缺失内容；前端支持文献工具勾选和可点击的片段出处。
+- 文献来源及筛选规则见 [文献库规范](app/knowledge/README.md)。RAGAS 衡量对摘录的忠实性，不等于核验论文或证明结论可靠。
 
 ### 2.3 上下文管理
 - 按轮分组历史、token 预算、滚动摘要（乐观锁防并发覆盖）。
@@ -120,7 +133,10 @@ python -m scripts.ingest_exercises
 # 可选：先试跑 python -m scripts.ingest_exercises --limit 20
 # 可选：仅英文 + BM25 python -m scripts.ingest_exercises --skip-translate --skip-embed
 
-# 4) 启动服务（默认 http://127.0.0.1:8000）
+# 4) 导入文献资料（已有 data/knowledge/raw 时执行）
+python -m scripts.ingest_knowledge
+
+# 5) 启动服务（默认 http://127.0.0.1:8000）
 uvicorn app.main:app --reload
 ```
 
@@ -185,32 +201,45 @@ token 为估算值；表结构由 create_all 创建，正式环境应引入 Alem
 - [x] 停滞检测与动作替换
 - [x] `suggest_next_week` 工具与确认后生成新版本
 
+
 ### 阶段 3：评测
-- [ ] 检索评测集与脚本
-- [ ] Agent 评测集与脚本
-- [ ] 评测结果写入 README / 简历
+- [x] 检索评测集与脚本
+- [x] Agent 评测集与脚本
+- [ ] 评测结果写入 README
 
 ### 阶段 4：可观测性与 Dashboard
-- [ ] LLM 调用记录落库
-- [ ] 统一 request_id 贯穿请求
-- [ ] 检索与工具调用记录
-- [ ] 前端 Dashboard
+- [x] LLM 调用记录落库（Agent / 摘要 / 记忆 / 翻译 / RAGAS）
+- [x] 统一 request_id 贯穿请求与后台任务
+- [x] 检索与工具调用记录（含失败、中断与降级）
+- [x] 前端 Dashborad：运行监控 / RAGAS 评估双页签
 
-### 阶段 5：Docker 部署
+### 阶段 5：添加高质量资料，增强理论性支撑
+> 方案：普通 RAG，动作库与文献库分开。
+- [x] 独立文献知识库：`data/knowledge/index`，复用 BM25 / 向量 / RRF / reranker
+- [x] 资料筛选标准与待核对记录：优先综述、荟萃分析和指南；冲突保留人工复核标记，见 [文献库规范](app/knowledge/README.md)
+- [x] 文献入库脚本：按 Markdown 章节及段落递归分割，默认每块最多 900 字符；稳定 ID、内容哈希与重建保护
+- [x] 块级元数据：标题、作者、DOI 来源链接、文件名、章节和待核对说明
+- [x] `search_knowledge_articles` 工具：原理与计划依据检索；前端工具选择器可单独勾选
+- [x] 文献片段引用：可点击查看作者、来源、章节、原文与回答时快照，支持历史恢复
+- [x] 评估对接：文献工具上下文复用现有 RAGAS 评分与 Dashborad，不新增一套评分逻辑
+- [x] 评测与测试：12 条文献检索种子用例；入库、混合检索、降级、工具、引用、历史及 RAGAS 上下文测试
+
+
+### 阶段 6：联网搜索工具
+- [x] `web_search` 工具
+- [x] 结果安全处理
+- [x] 注入测试用例
+
+### 阶段 7：多 Agent（视评测结果决定）
+- [ ] 根据阶段 3 的评测找出单 Agent 的瓶颈
+- [ ] 按需拆分子 Agent
+
+### 阶段 8：Docker 部署
 - [ ] 后端 Dockerfile
 - [ ] 前端 Dockerfile（构建后由 Nginx 提供静态文件并反向代理 API）
 - [ ] docker-compose：backend + frontend + PostgreSQL（+ Milvus 可选）
 - [ ] 引入 Alembic 管理表结构
 - [ ] 部署到云服务器
-
-### 阶段 6：联网搜索工具
-- [ ] `web_search` 工具
-- [ ] 结果安全处理
-- [ ] 注入测试用例
-
-### 阶段 7：多 Agent（视评测结果决定）
-- [ ] 根据阶段 3 的评测找出单 Agent 的瓶颈
-- [ ] 按需拆分子 Agent
 
 ### 贯穿各阶段：安全与测试
 - [x] 越权：每个新增资源（计划、记录、统计）都写双用户互访测试（阶段 1 已覆盖）

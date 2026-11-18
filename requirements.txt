@@ -34,3 +34,6 @@ pytest-asyncio>=0.23
 
 # 可选：本地 Embedding（config.yml 中 embedding.provider=local 时需要）
 # sentence-transformers>=3.0
+
+# 可选：在线 RAG 评估（config.yml 中 evaluation.enabled=true 时需要）
+# ragas>=0.4

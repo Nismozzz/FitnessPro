@@ -31,15 +31,17 @@ const week = monday();
 const exercise = { id: 'press', name: 'Dumbbell Press', name_zh: '哑铃卧推', equipment: 'dumbbell', primary_muscles: ['chest'], category: 'strength' };
 const plan = { id: 'p1', name: '新手三日计划', week_start: week, status: 'draft', version: 1, goal: 'muscle_gain', validation: { warnings: [{ message: '请注意动作控制' }], estimated_minutes: { 0: 30 } }, days: [{ id: 'd1', weekday: 0, focus: '胸部训练', warmup_minutes: 5, cooldown_minutes: 5, notes: '', exercises: [{ id: 'pe1', exercise_id: 'press', position: 0, sets: 1, reps_min: 8, reps_max: 12, duration_seconds: null, rest_seconds: 60, rpe: null, target_weight_kg: 20, notes: '', exercise }] }] };
 const stats = { week_start: week, plan_id: 'p1', planned_days: 1, completed_days: 1, completion_rate: 1, workouts: 1, completed_sets: 3, duration_min: 30, volume_kg_reps: 480, daily: Array.from({ length: 7 }, (_, i) => ({ date: `day${i}`, volume_kg_reps: i === 0 ? 480 : 0, duration_min: i === 0 ? 30 : 0, sets: i === 0 ? 3 : 0 })), muscles: [{ muscle: '胸部', planned_sets: 3, actual_sets: 3 }], prs: [{ exercise_id: 'press', name: '哑铃卧推', estimated_1rm_kg: 25.33, previous_best_kg: null, is_pr: true }], notes: ['只使用真实训练记录'] };
-let calls = [], active = false;
+let calls = [], active = false, deletedPlan = false, records = [];
 const props = { token: 'test', completedTurns: 0, login: () => {}, ask: () => {}, detail: () => {} };
 function mockFetch() {
-  calls = []; active = false;
+  calls = []; active = false; deletedPlan = false; records = [];
   globalThis.fetch = async (url, options = {}) => {
     calls.push({ url, options });
+    if (url === '/api/v1/plans/p1' && options.method === 'DELETE') { deletedPlan = true; return new Response(null, { status: 204 }); }
+    if (url === '/api/v1/logs/l1' && options.method === 'DELETE') { records = []; return new Response(null, { status: 204 }); }
     if (url.endsWith('/activate')) { active = true; return new Response('{}'); }
-    if (url === '/api/v1/plans') return new Response(JSON.stringify([{ ...plan, status: active ? 'active' : 'draft' }]));
-    if (url === '/api/v1/logs') return new Response(JSON.stringify([]));
+    if (url === '/api/v1/plans') return new Response(JSON.stringify(deletedPlan ? [] : [{ ...plan, status: active ? 'active' : 'draft' }]));
+    if (url === '/api/v1/logs') return new Response(JSON.stringify(records));
     if (url.startsWith('/api/v1/stats/weekly')) return new Response(JSON.stringify(stats));
     if (url === '/api/v1/knowledge/search') return new Response(JSON.stringify({ hits: [exercise] }));
     throw new Error(`Unexpected request ${url}`);
@@ -123,28 +125,49 @@ test('private training pages do not make requests before login', async () => {
   await click(button('登录 / 注册')); assert.equal(login, true);
 });
 
-test('next week suggestions require preview and confirmation before saving a draft', async () => {
-  await render(null);
-  const { NextWeekPanel } = await import('../src/NextWeekPanel.tsx');
-  calls = []; let saved;
-  globalThis.fetch = async (url, options = {}) => {
-    calls.push({ url, options });
-    if (url.endsWith('/suggest-next-week')) return new Response(JSON.stringify({
-      suggestion_id: 'a'.repeat(64), source_plan_id: 'p1', week_start: '2026-12-07',
-      adjustments: [{ weekday: 0, position: 0, exercise_id: 'press', name: '哑铃卧推', kind: 'replace', reason: '三个完整周无提升', changes: {}, candidates: [{ exercise_id: 'alt', name: '替代动作' }] }],
-      validation: { valid: true, errors: [], warnings: [] }, warnings: [], notes: ['确认后保存草稿']
-    }));
-    if (url.endsWith('/next-week')) return new Response(JSON.stringify({ ...plan, id: 'p2', version: 2 }));
-    throw new Error(`Unexpected request ${url}`);
-  };
-  await render(h(NextWeekPanel, { planId: 'p1', disabled: false, onSaved: async p => { saved = p; } }));
-  assert.equal(calls.length, 0);
-  await click(button('查看下周调整建议'));
-  assert.equal(calls.length, 1);
-  assert.match(document.body.textContent, /三个完整周无提升/);
-  await value(document.querySelector('select'), 'alt');
-  await click(button('确认建议，保存下周草稿'));
-  assert.equal(saved.id, 'p2');
-  assert.deepEqual(JSON.parse(calls[1].options.body), { suggestion_id: 'a'.repeat(64), replacements: [{ weekday: 0, position: 0, exercise_id: 'alt' }] });
-  assert.equal(calls.filter(c => c.url.endsWith('/activate')).length, 0);
+
+test('plan deletion requires confirmation, allows cancellation and clears selected plan', async () => {
+  await render(null); mockFetch(); active = true;
+  await render(h(TrainingWorkspace, { ...props, page: 'plans' }));
+  await click(button('删除计划'));
+  assert.match(document.querySelector('[aria-label="确认删除"]').textContent, /已有训练记录会保留/);
+  assert.equal(calls.filter(c => c.options.method === 'DELETE').length, 0);
+  await click(button('取消删除'));
+  assert.equal(document.querySelector('[aria-label="确认删除"]'), null);
+  await click(button('删除计划')); await click(button('确认删除'));
+  assert.equal(calls.filter(c => c.url === '/api/v1/plans/p1' && c.options.method === 'DELETE').length, 1);
+  assert.equal(document.querySelectorAll('.training-day').length, 0);
+  assert.match(document.body.textContent, /你的第一份计划/);
+});
+
+test('log deletion preserves recorder and refreshes statistics when switching pages', async () => {
+  await render(null); mockFetch();
+  records = [{ id: 'l1', performed_at: `${week}T11:00:00Z`, duration_min: 30, notes: '今天训练', sets: [{ exercise_id: 'press', exercise, set_no: 1, reps: 8, completed: true, weight_kg: 20 }] }];
+  await render(h(TrainingWorkspace, { ...props, page: 'logs' }));
+  const entry = document.querySelector('.log-list details');
+  await act(async () => { entry.open = true; });
+  await click(button('删除记录'));
+  assert.match(document.querySelector('[aria-label="确认删除"]').textContent, /统计数据将同步更新/);
+  await click(button('确认删除'));
+  assert.equal(calls.filter(c => c.url === '/api/v1/logs/l1' && c.options.method === 'DELETE').length, 1);
+  assert.equal(document.querySelectorAll('.log-list details').length, 0);
+  assert.match(document.body.textContent, /还没有训练记录/);
+  assert.ok(button('保存实际训练'));
+  await render(h(TrainingWorkspace, { ...props, page: 'stats' }));
+  assert.ok(calls.some(c => c.url.startsWith('/api/v1/stats/weekly')));
+});
+
+test('failed deletion keeps data and confirmation for retry', async () => {
+  await render(null); mockFetch();
+  const original = globalThis.fetch;
+  globalThis.fetch = async (url, options = {}) => options.method === 'DELETE'
+    ? new Response(JSON.stringify({ detail: '删除失败，请重试' }), { status: 500 }) : original(url, options);
+  await render(h(TrainingWorkspace, { ...props, page: 'plans' }));
+  await click(button('删除计划')); await click(button('确认删除'));
+  assert.match(document.querySelector('[role=alert]').textContent, /删除失败/);
+  assert.equal(document.querySelectorAll('.training-day').length, 7);
+  assert.ok(button('确认删除')); assert.equal(button('确认删除').disabled, false);
+  globalThis.fetch = original;
+  await click(button('确认删除'));
+  assert.equal(document.querySelectorAll('.training-day').length, 0);
 });

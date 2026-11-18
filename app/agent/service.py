@@ -20,9 +20,11 @@ from app.context.builder import ContextBuilder
 from app.context.compressor import context_compressor
 from app.conversation import repository as repo
 from app.database.models import new_id
-from app.llm.provider import get_llm
+from app.evaluation.service import evaluation_service
+from app.llm.provider import Tier, get_llm
 from app.memory.extractor import extract_memories
 from app.utils.background import spawn
+from app.observability.context import trace_scope, trace_context
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +44,26 @@ class AgentService:
         self._tools = build_default_tools()
         self._builder = ContextBuilder()
 
+    def select_tools(self, names: list[str] | None):
+        if names is None:
+            return list(self._tools)
+        unknown = set(names) - {tool.name for tool in self._tools}
+        if unknown:
+            raise ValueError("未知工具：" + ", ".join(sorted(unknown)))
+        return [tool for tool in self._tools if tool.name in names]
+
+    def tool_catalog(self) -> list[dict[str, Any]]:
+        import os
+        return [
+            {"name": tool.name, "description": tool.description,
+             "side_effect": tool.side_effect,
+             "available": tool.name != "web_search" or bool(
+                 settings.web_search.enabled and os.getenv(settings.web_search.api_key_env)),
+             "unavailable_reason": "请先配置并启用联网搜索" if tool.name == "web_search" and not (
+                 settings.web_search.enabled and os.getenv(settings.web_search.api_key_env)) else None}
+            for tool in self._tools
+        ]
+
     def _lock(self, session_id: str) -> asyncio.Lock:
         return self._locks.setdefault(session_id, asyncio.Lock())
 
@@ -55,21 +77,22 @@ class AgentService:
         return session.id
 
     def start_turn(
-        self, *, user_id: str, session_id: str, message: str
+        self, *, user_id: str, session_id: str, message: str, model_tier: Tier = "normal", selected_tools: list[str] | None = None
     ) -> asyncio.Queue[AgentEvent | None]:
         """启动一轮对话，返回事件队列；队列以 None 结尾。调用前必须完成 prepare_session。"""
         queue: asyncio.Queue[AgentEvent | None] = asyncio.Queue()
-        spawn(self._run_turn(user_id, session_id, message, queue), name=f"turn:{session_id}")
+        with trace_scope(user_id=user_id, session_id=session_id, module="agent"):
+            spawn(self._run_turn(user_id, session_id, message, queue, model_tier, selected_tools), name=f"turn:{session_id}")
         return queue
 
     async def _run_turn(
-        self, user_id: str, session_id: str, message: str, queue: asyncio.Queue
+        self, user_id: str, session_id: str, message: str, queue: asyncio.Queue, model_tier: Tier = "normal", selected_tools: list[str] | None = None
     ) -> None:
         terminal_sent = False
         final_answer = ""
         try:
             async with self._lock(session_id):
-                await queue.put(AgentEvent("session", {"session_id": session_id}))
+                await queue.put(AgentEvent("session", {"session_id": session_id, "request_id": trace_context.get().request_id if trace_context.get() else None}))
 
                 built = await self._builder.build(
                     session_id=session_id, user_id=user_id, user_message=message
@@ -80,8 +103,8 @@ class AgentService:
                 await repo.append_messages(session_id, turn_id, [{"role": "user", "content": message}])
 
                 loop = AgentLoop(
-                    get_llm("normal"),
-                    ToolExecutor(self._tools, default_timeout=settings.agent.tool_timeout),
+                    get_llm(model_tier),
+                    ToolExecutor(self.select_tools(selected_tools), default_timeout=settings.agent.tool_timeout),
                     settings.agent,
                     tool_result_max_tokens=settings.context.tool_result_max_tokens,
                 )
@@ -106,6 +129,16 @@ class AgentService:
 
                 await queue.put(done_event or AgentEvent("done", {"status": "error"}))
                 terminal_sent = True
+
+            if final_answer and done_event is not None and done_event.data.get("status") == "completed":
+                await evaluation_service.schedule(
+                    user_id=user_id,
+                    session_id=session_id,
+                    turn_id=turn_id,
+                    query=message,
+                    transcript=transcript,
+                    response=final_answer,
+                )
 
             spawn(context_compressor.maybe_compress(session_id), name=f"compress:{session_id}")
             if final_answer and settings.memory.auto_extract:

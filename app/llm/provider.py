@@ -7,6 +7,7 @@ reasoning_content 等字段都能原样拿到，Agent 循环的行为更透明�
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -19,6 +20,9 @@ from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletion, ChatCompletionChunk
 
 from app.config import LLMProfile, settings
+from app.database.models import LLMCall
+from app.observability.context import trace_context
+from app.observability.recorder import record
 
 logger = logging.getLogger(__name__)
 
@@ -67,17 +71,26 @@ class LLMClient:
         if json_mode:
             params["response_format"] = {"type": "json_object"}
         start = time.perf_counter()
-        response = await self._client.chat.completions.create(messages=messages, **params)
-        usage = response.usage
-        logger.info(
-            "llm tier=%s model=%s prompt=%s completion=%s ms=%d",
-            self.tier,
-            params["model"],
-            getattr(usage, "prompt_tokens", None),
-            getattr(usage, "completion_tokens", None),
-            (time.perf_counter() - start) * 1000,
+        response = None
+        status, error = "success", None
+        try:
+            response = await self._client.chat.completions.create(messages=messages, **params)
+            return response
+        except BaseException as exc:
+            status, error = "cancelled" if isinstance(exc, asyncio.CancelledError) else "error", type(exc).__name__
+            raise
+        finally:
+            self._record(params, start, getattr(response, "usage", None), None, status, error)
+
+    def _record(self, params, start, usage, first_token_ms, status, error):
+        ctx = trace_context.get()
+        record(
+            LLMCall, module=ctx.module if ctx else "agent", model=params["model"],
+            prompt_tokens=getattr(usage, "prompt_tokens", None),
+            completion_tokens=getattr(usage, "completion_tokens", None),
+            latency_ms=(time.perf_counter() - start) * 1000,
+            first_token_ms=first_token_ms, status=status, error=error,
         )
-        return response
 
     async def complete_text(self, messages: list[dict], **overrides: Any) -> str:
         response = await self.complete(messages, **overrides)
@@ -97,17 +110,41 @@ class LLMClient:
         params = self._params(overrides)
         if tools:
             params["tools"] = tools
-        stream = await self._client.chat.completions.create(
-            messages=messages,
-            stream=True,
-            stream_options={"include_usage": True},
-            **params,
-        )
+        start = time.perf_counter()
+        stream, usage, first_token_ms = None, None, None
+        status, error = "success", None
+        exhausted = False
         try:
+            stream = await self._client.chat.completions.create(
+                messages=messages, stream=True, stream_options={"include_usage": True}, **params,
+            )
             async for chunk in stream:
+                if chunk.usage is not None:
+                    usage = chunk.usage
+                if first_token_ms is None:
+                    for choice in chunk.choices:
+                        delta = choice.delta
+                        if delta and (delta.content or getattr(delta, "reasoning_content", None) or delta.tool_calls):
+                            first_token_ms = (time.perf_counter() - start) * 1000
+                            break
                 yield chunk
+            exhausted = True
+        except BaseException as exc:
+            status = "cancelled" if isinstance(exc, (asyncio.CancelledError, GeneratorExit)) else "error"
+            error = type(exc).__name__
+            raise
         finally:
-            await stream.close()
+            try:
+                if stream is not None:
+                    await stream.close()
+            except BaseException as exc:
+                if status == "success":
+                    status, error = "error", type(exc).__name__
+                raise
+            finally:
+                if not exhausted and status == "success":
+                    status = "cancelled"
+                self._record(params, start, usage, first_token_ms, status, error)
 
 
 _FENCE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)

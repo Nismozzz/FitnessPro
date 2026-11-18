@@ -9,11 +9,13 @@ def build_default_tools() -> list[BaseTool]:
     from app.agent.tools.memory_tools import ConfirmMemoryTool, ForgetMemoryTool, SaveMemoryTool
     from app.agent.tools.profile_tools import GetUserProfileTool, UpdateUserProfileTool
     from app.agent.tools.time_tool import CurrentTimeTool
+    from app.agent.tools.skill_tools import LoadTrainingPlanSkillTool
     from app.agent.tools.web_search import WebSearchTool
 
     from app.agent.tools.plan_tools import DraftWeeklyPlanTool, SavePlanTool, GetActivePlanTool, UpdatePlanExerciseTool, LogWorkoutTool, GetTrainingStatsTool, SuggestNextWeekTool, ApplyNextWeekTool
 
     return [
+        LoadTrainingPlanSkillTool(),
         DraftWeeklyPlanTool(), SavePlanTool(), GetActivePlanTool(), UpdatePlanExerciseTool(), LogWorkoutTool(), GetTrainingStatsTool(),
         SuggestNextWeekTool(), ApplyNextWeekTool(),
         SearchExercisesTool(),

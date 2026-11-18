@@ -146,3 +146,78 @@ async def test_compression_keeps_history_contiguous(db, monkeypatch):
 
     # 过期版本号的写入会被拒绝
     assert not await repo.update_summary(session.id, 0, "旧版本", 1)
+
+
+async def test_context_only_loads_skill_metadata_and_refreshes_next_turn(db, tmp_path, monkeypatch):
+    from app.agent import skills
+    from app.llm.tokens import message_tokens
+
+    uid = await make_user()
+    await update_profile(uid, ProfileData(goal="muscle_gain"))
+    session = await repo.create_session(uid, "训练计划")
+    await repo.append_messages(session.id, "previous", [
+        {"role": "user", "content": "每周练四天"},
+        {"role": "assistant", "content": "已了解可用天数"},
+    ])
+    builder = ContextBuilder()
+    built = await builder.build(session_id=session.id, user_id=uid, user_message="请制定计划")
+    body = skills.load_training_plan_skill()
+    assert built.messages[0]["role"] == "system"
+    assert body not in built.messages[0]["content"]
+    assert skills.load_training_plan_skill_metadata() in built.messages[0]["content"]
+    assert "目标：增肌" in built.messages[0]["content"]
+    assert built.messages[1]["content"] == "每周练四天"
+    assert built.messages[-1] == {"role": "user", "content": "请制定计划"}
+    assert built.stats["system_tokens"] == message_tokens(built.messages[0])
+
+    path = tmp_path / "SKILL.md"
+    header = "---\nname: training-plan-design\ndescription: 测试\n---\n"
+    monkeypatch.setattr(skills, "TRAINING_PLAN_SKILL_PATH", path)
+    for description, rule in (("第一版描述", "第一版规则 {sets}"), ("第二版描述", "第二版规则 {reps}")):
+        path.write_text(header.replace("测试", description) + rule, encoding="utf-8")
+        refreshed = await builder.build(session_id=session.id, user_id=uid, user_message="调整计划")
+        assert description in refreshed.messages[0]["content"]
+        assert rule not in refreshed.messages[0]["content"]
+        assert body not in refreshed.messages[0]["content"]
+        assert "description: 测试" not in refreshed.messages[0]["content"]
+
+
+async def test_skill_body_is_only_visible_during_planning_turn(db, monkeypatch):
+    from app.agent import skills
+    from app.utils.background import drain
+    from tests.test_agent import chunk as tool_chunk, tc
+
+    body = skills.load_training_plan_skill()
+
+    async def no_compression(*args):
+        return False
+
+    class Model:
+        def __init__(self):
+            self.seen = []
+
+        async def stream(self, messages, **kwargs):
+            self.seen.append([dict(m) for m in messages])
+            if len(self.seen) == 1:
+                yield tool_chunk(tool_calls=[tc(0, "skill", "load_training_plan_skill", "{}")])
+            else:
+                yield chunk("请补充训练条件" if len(self.seen) == 2 else "原理说明")
+
+    llm = Model()
+    monkeypatch.setattr(agent_service_module, "get_llm", lambda tier: llm)
+    monkeypatch.setattr(settings.memory, "auto_extract", False)
+    monkeypatch.setattr(settings.evaluation, "enabled", False)
+    monkeypatch.setattr(agent_service_module.context_compressor, "maybe_compress", no_compression)
+    uid = await make_user()
+    service = AgentService()
+    sid, events = await run_turn(service, uid, None, "帮我制定训练计划")
+    assert events[-1].data["status"] == "completed"
+    assert not any(body in (m.get("content") or "") for m in llm.seen[0])
+    assert any(m["role"] == "system" and body in m["content"] for m in llm.seen[1])
+    rows = await repo.load_messages(sid)
+    assert not any(body in (r.content or "") for r in rows)
+
+    await run_turn(service, uid, sid, "先不做计划，解释肌肥大原理")
+    assert not any(body in (m.get("content") or "") for m in llm.seen[2])
+    assert skills.load_training_plan_skill_metadata() in llm.seen[2][0]["content"]
+    await drain()

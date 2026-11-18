@@ -9,6 +9,7 @@ from sqlalchemy import select
 
 from app.agent.loop import AgentLoop
 from app.agent.prompts import SYSTEM_PROMPT
+from app.agent.skills import load_training_plan_skill_metadata
 from app.agent.tools.base import ToolContext, ToolExecutor
 from app.agent.tools.registry import build_default_tools
 from app.config import settings
@@ -107,7 +108,8 @@ async def run_case(case, catalog, now, *, llm=None, retrieval_mode='hybrid_reran
     executor = TracingExecutor(build_default_tools(), case)
     active, candidates = await memory_service.for_prompt(uid)
     messages = [{'role': 'system', 'content': SYSTEM_PROMPT.format(now=format_local(now), profile=render_profile(await get_profile(uid)),
-                 memories=render_memories(active, candidates, settings.context.memory_prompt_tokens), summary='')},
+                 memories=render_memories(active, candidates, settings.context.memory_prompt_tokens), summary='',
+                 training_plan_skill=load_training_plan_skill_metadata())},
                 {'role': 'user', 'content': case.prompt}]
     before_plans, before_logs = await service.list_plans(uid), await service.list_logs(uid)
     if llm is None:

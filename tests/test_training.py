@@ -242,15 +242,16 @@ async def test_active_injury_memory_participates_in_validation(training):
 
 
 async def test_fake_agent_validation_failure_correction_then_save(training):
+    from app.agent.tools.skill_tools import LoadTrainingPlanSkillTool
     uid, _, ids = training
     invalid, valid = draft(ids[2]), draft(ids[0])
     def call(name, body, index):
         return chunk(tool_calls=[tc(0, f'call{index}', name, json.dumps(body))])
-    llm = FakeLLM([[call('draft_weekly_plan', invalid, 1)], [call('draft_weekly_plan', valid, 2)], [call('save_plan', valid, 3)], [chunk('已保存草稿，请在计划页确认。')]])
-    loop = AgentLoop(llm, ToolExecutor([DraftWeeklyPlanTool(), SavePlanTool()]), AgentSettings(max_iterations=6))
+    llm = FakeLLM([[call('load_training_plan_skill', {}, 0)], [call('draft_weekly_plan', invalid, 1)], [call('draft_weekly_plan', valid, 2)], [call('save_plan', valid, 3)], [chunk('已保存草稿，请在计划页确认。')]])
+    loop = AgentLoop(llm, ToolExecutor([LoadTrainingPlanSkillTool(), DraftWeeklyPlanTool(), SavePlanTool()]), AgentSettings(max_iterations=6))
     transcript = []
     events = [e async for e in loop.run([{'role': 'user', 'content': '制定一周计划'}], ToolContext(uid, 'test'), transcript)]
-    results = [e.data['data'] for e in events if e.type == 'tool_result']
+    results = [e.data['data'] for e in events if e.type == 'tool_result' and e.data['name'] != 'load_training_plan_skill']
     assert not results[0]['valid'] and 'equipment' in codes(results[0])
     assert results[1]['valid'] and results[2]['status'] == 'draft'
     assert events[-1].data['status'] == 'completed'

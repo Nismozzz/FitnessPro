@@ -131,7 +131,7 @@ async def test_same_batch_write_before_search_is_blocked(search_api, monkeypatch
 def test_web_tool_registered_and_prompt_formats():
     from app.agent.prompts import SYSTEM_PROMPT
     assert 'web_search' in {t.name for t in build_default_tools()}
-    assert SYSTEM_PROMPT.format(now='today', profile='', memories='', summary='')
+    assert SYSTEM_PROMPT.format(now='today', profile='', memories='', summary='', training_plan_skill='')
 
 
 @pytest.mark.parametrize('failure,expected', [

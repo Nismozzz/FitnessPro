@@ -25,7 +25,8 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from app.agent.citations import EvidenceRegistry, KNOWLEDGE_TOOLS
-from app.agent.tools.base import ToolContext, ToolExecutor
+from app.agent.tools.base import ToolContext, ToolExecutor, ToolResult
+from app.agent.tools.skill_tools import LOAD_TRAINING_PLAN_SKILL, PLAN_DESIGN_TOOLS
 from app.agent.types import AgentEvent, ToolCall
 from app.config import AgentSettings
 from app.llm.provider import LLMClient
@@ -72,6 +73,7 @@ class AgentLoop:
         deadline = time.monotonic() + self.cfg.total_timeout
         usage = {"prompt_tokens": 0, "completion_tokens": 0}
         tool_calls_count = 0
+        training_skill_loaded = False
 
         for iteration in range(1, self.cfg.max_iterations + 1):
             remaining = deadline - time.monotonic()
@@ -209,6 +211,8 @@ class AgentLoop:
             # listed before web_search. This immutable context persists this turn.
             if any(call.name == "web_search" for call in calls):
                 ctx = replace(ctx, allow_side_effects=False)
+            skill_visible_to_model = training_skill_loaded
+            pending_skill_message = None
             for call in calls:
                 tool_calls_count += 1
                 yield AgentEvent(
@@ -222,11 +226,38 @@ class AgentLoop:
                     return
                 try:
                     async with asyncio.timeout(remaining):
-                        result = await self.executor.execute(call, ctx)
+                        if (
+                            call.name in PLAN_DESIGN_TOOLS
+                            and call.name in self.executor.names
+                            and not skill_visible_to_model
+                        ):
+                            result = ToolResult(False, error=(
+                                "本轮尚未读取训练规划技能。请先单独调用 load_training_plan_skill，"
+                                "读取成功后再编排计划；不能与技能加载放在同一批调用中。"
+                            ))
+                        else:
+                            result = await self.executor.execute(call, ctx)
                 except TimeoutError:
                     yield AgentEvent("error", {"message": "本次任务处理超时，请查看周训练计划页确认草稿是否已保存"})
                     yield self._done("timeout", iteration, usage, tool_calls_count)
                     return
+                skill_message = None
+                if result.success and call.name == LOAD_TRAINING_PLAN_SKILL:
+                    # 仅本地固定技能工具可以提供正文。正文独立进入本轮系统上下文，
+                    # 不受工具结果截断，也不落入 transcript 或前端事件。
+                    if not training_skill_loaded:
+                        skill_message = {
+                            "role": "system",
+                            "content": (
+                                "## 本轮已加载训练规划技能：training-plan-design\n"
+                                "以下为应用维护的规划规则；不覆盖既有证据、工具权限、"
+                                "保存确认流程及安全边界，也不作为文献证据。\n\n"
+                                + result.data["body"]
+                            ),
+                        }
+                        training_skill_loaded = True
+                    result = ToolResult(True, data={"name": "training-plan-design", "loaded": True})
+
                 if result.success and call.name in KNOWLEDGE_TOOLS and isinstance(result.data, dict):
                     content_str = evidence.tool_content(result.data, self.tool_result_max_tokens)
                 else:
@@ -246,6 +277,13 @@ class AgentLoop:
                         "ms": int((time.monotonic() - started) * 1000),
                     },
                 )
+                if skill_message is not None:
+                    # 放在该批所有工具结果之后，保持 assistant/tool 协议连续。
+                    # 同批尚未执行的结果会先追加，批结束后再注入。
+                    pending_skill_message = skill_message
+
+            if pending_skill_message is not None:
+                messages.append(pending_skill_message)
 
         # for 循环正常结束只可能发生在 max_iterations <= 0 的配置下
         yield AgentEvent("error", {"message": "max_iterations 配置无效"})

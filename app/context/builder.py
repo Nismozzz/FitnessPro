@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from app.agent.prompts import DROPPED_NOTE, SUMMARY_SECTION, SYSTEM_PROMPT
+from app.agent.skills import load_training_plan_skill_metadata
 from app.config import settings
 from app.context.compressor import ContextCompressor, context_compressor
 from app.context.history import fit_recent_groups, rows_to_groups
@@ -62,6 +63,7 @@ class ContextBuilder:
         kept, dropped = fit_recent_groups(groups, cfg.history_token_budget)
 
         system = SYSTEM_PROMPT.format(
+            training_plan_skill=load_training_plan_skill_metadata(),
             now=format_local(local_now(settings.timezone)),
             profile=render_profile(profile),
             memories=("\n\n" + memories_text) if memories_text else "",

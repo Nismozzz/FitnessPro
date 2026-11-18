@@ -352,3 +352,71 @@ async def test_agent_record_and_stats_tools_use_real_storage_and_idempotency(tra
     assert first['id'] == second['id'] and len(await list_logs(uid)) == 1
     stats = await GetTrainingStatsTool().run(StatsParams(week_start=date(2026, 11, 16)), context)
     assert stats['completed_sets'] == 1 and stats['volume_kg_reps'] == 160
+
+
+@pytest.mark.parametrize('status', ['draft', 'active', 'archived'])
+async def test_delete_plan_preserves_logs_and_other_versions(training, status):
+    from app.database.models import PlanDay, PlanExercise
+    uid, bob, ids = training
+    async with await client_for(uid) as client, await client_for(bob) as other:
+        data = draft(ids[0], days=(0,))
+        plan = (await client.post('/api/v1/plans', json=data)).json()
+        newer = (await client.patch(f"/api/v1/plans/{plan['id']}/exercises", json={
+            'weekday': 0, 'position': 0, 'exercise': {'exercise_id': ids[1], 'sets': 3, 'reps_min': 8, 'reps_max': 12}})).json()
+        if status != 'draft':
+            await client.post(f"/api/v1/plans/{plan['id']}/activate")
+        if status == 'archived':
+            await client.post(f"/api/v1/plans/{newer['id']}/activate")
+        log = (await client.post('/api/v1/logs', json={
+            'idempotency_key': new_id(), 'plan_day_id': plan['days'][0]['id'],
+            'performed_at': '2026-11-16T19:00:00+08:00', 'duration_min': 30,
+            'sets': [{'exercise_id': ids[0], 'set_no': 1, 'reps': 8, 'weight_kg': 20}]})).json()
+        path = f"/api/v1/plans/{plan['id']}"
+        assert (await other.delete(path)).status_code == 404
+        assert (await client.get(path)).json()['status'] == status
+        response = await client.delete(path)
+        assert response.status_code == 204 and not response.content
+        assert (await client.get(path)).status_code == 404
+        assert (await client.delete(path)).status_code == 404
+        assert [p['id'] for p in (await client.get('/api/v1/plans')).json()] == [newer['id']]
+        retained = (await client.get(f"/api/v1/logs/{log['id']}")).json()
+        assert retained == {**log, 'plan_day_id': None}
+        stats = (await client.get('/api/v1/stats/weekly?week_start=2026-11-16')).json()
+        assert stats['volume_kg_reps'] == 160 and stats['workouts'] == 1
+        if status == 'active':
+            assert (await client.get('/api/v1/plans/active')).json() is None
+        async with SessionLocal() as db:
+            day_ids = [d['id'] for d in plan['days']]
+            assert not (await db.scalars(select(PlanDay).where(PlanDay.id.in_(day_ids)))).all()
+            assert not (await db.scalars(select(PlanExercise).where(PlanExercise.plan_day_id.in_(day_ids)))).all()
+        # Deleted content can be saved again; no stale deduplication blocks it.
+        assert (await client.post('/api/v1/plans', json=data)).json()['id'] != plan['id']
+
+
+async def test_delete_log_removes_sets_recalculates_stats_and_requires_owner(training):
+    from app.database.models import WorkoutSet
+    uid, bob, ids = training
+    async with await client_for(uid) as client, await client_for(bob) as other:
+        plan = (await client.post('/api/v1/plans', json=draft(ids[0], days=(0,)))).json()
+        await client.post(f"/api/v1/plans/{plan['id']}/activate")
+        body = {'idempotency_key': new_id(), 'plan_day_id': plan['days'][0]['id'],
+                'performed_at': '2026-11-16T19:00:00+08:00', 'duration_min': 30,
+                'sets': [{'exercise_id': ids[0], 'set_no': i, 'reps': 8, 'weight_kg': 20} for i in (1, 2, 3)]}
+        log = (await client.post('/api/v1/logs', json=body)).json()
+        path = f"/api/v1/logs/{log['id']}"
+        assert (await other.delete(path)).status_code == 404
+        assert (await client.get(path)).status_code == 200
+        anonymous = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=anonymous, base_url='http://test') as guest:
+            assert (await guest.delete(path)).status_code == 401
+            assert (await guest.delete(f"/api/v1/plans/{plan['id']}")).status_code == 401
+        assert (await client.delete(path)).status_code == 204
+        assert (await client.get(path)).status_code == 404
+        assert (await client.delete(path)).status_code == 404
+        assert (await client.get('/api/v1/logs')).json() == []
+        stats = (await client.get('/api/v1/stats/weekly?week_start=2026-11-16')).json()
+        assert stats['workouts'] == stats['completed_sets'] == stats['duration_min'] == stats['volume_kg_reps'] == 0
+        assert stats['completion_rate'] == 0 and stats['prs'] == []
+        assert (await client.get(f"/api/v1/plans/{plan['id']}")).status_code == 200
+        async with SessionLocal() as db:
+            assert not (await db.scalars(select(WorkoutSet).where(WorkoutSet.log_id == log['id']))).all()

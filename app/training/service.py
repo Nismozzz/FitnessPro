@@ -5,7 +5,7 @@ import json
 from datetime import timezone
 from typing import Any
 
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 
 from app.database.models import Exercise, PlanDay, PlanExercise, User, WorkoutLog, WorkoutPlan, WorkoutSet, new_id
 from app.database.session import SessionLocal
@@ -128,6 +128,19 @@ async def get_plan(user_id: str, plan_id: str) -> dict:
         return await serialize_plan(db, await owned_plan(db, user_id, plan_id))
 
 
+async def delete_plan(user_id: str, plan_id: str) -> None:
+    async with SessionLocal() as db:
+        await lock_user(db, user_id)
+        await owned_plan(db, user_id, plan_id)
+        days = select(PlanDay.id).where(PlanDay.plan_id == plan_id)
+        # Keep actual training history, even when its source plan is removed.
+        await db.execute(update(WorkoutLog).where(WorkoutLog.plan_day_id.in_(days)).values(plan_day_id=None))
+        await db.execute(delete(PlanExercise).where(PlanExercise.plan_day_id.in_(days)))
+        await db.execute(delete(PlanDay).where(PlanDay.plan_id == plan_id))
+        await db.execute(delete(WorkoutPlan).where(WorkoutPlan.id == plan_id, WorkoutPlan.user_id == user_id))
+        await db.commit()
+
+
 async def active_plan(user_id: str) -> dict | None:
     async with SessionLocal() as db:
         row = await db.scalar(select(WorkoutPlan).where(WorkoutPlan.user_id == user_id, WorkoutPlan.status == "active"))
@@ -221,3 +234,14 @@ async def get_log(user_id: str, log_id: str) -> dict:
         if row is None:
             raise TrainingError("训练记录不存在", 404)
         return await serialize_log(db, row)
+
+
+async def delete_log(user_id: str, log_id: str) -> None:
+    async with SessionLocal() as db:
+        await lock_user(db, user_id)
+        row = await db.scalar(select(WorkoutLog).where(WorkoutLog.id == log_id, WorkoutLog.user_id == user_id))
+        if row is None:
+            raise TrainingError("训练记录不存在", 404)
+        await db.execute(delete(WorkoutSet).where(WorkoutSet.log_id == log_id))
+        await db.delete(row)
+        await db.commit()

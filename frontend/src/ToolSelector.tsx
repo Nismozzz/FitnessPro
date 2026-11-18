@@ -28,7 +28,7 @@ export function useSessionTools(user: string, session: string | null) {
 const groups = [
   { title: '动作知识库', color: 'knowledge', names: ['search_exercises', 'get_exercise_detail'] },
   { title: '文献知识库', color: 'knowledge', names: ['search_knowledge_articles'] },
-  { title: '训练计划与记录', color: 'training', names: ['draft_weekly_plan', 'save_plan', 'get_active_plan', 'update_plan_exercise', 'log_workout', 'get_training_stats'] },
+  { title: '训练计划与记录', color: 'training', names: ['draft_weekly_plan', 'save_plan', 'get_active_plan', 'update_plan_exercise', 'log_workout', 'get_training_stats', 'suggest_next_week', 'apply_next_week'] },
   { title: '档案与记忆', color: 'memory', names: ['get_user_profile', 'update_user_profile', 'save_memory', 'confirm_memory', 'forget_memory'] },
   { title: '实时信息', color: 'web', names: ['get_current_time', 'web_search'] },
 ];

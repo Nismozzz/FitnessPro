@@ -63,3 +63,23 @@ test('tool selection persists per session and account, binds new sessions, and d
   await render({ token: null });
   assert.ok([...document.querySelectorAll('button')].every(el => el.disabled));
 });
+
+test('progression tools can be individually selected and are locked while generating', async () => {
+  globalThis.toolRequest = async () => [
+    { name: 'suggest_next_week', description: '预览', side_effect: false, available: true },
+    { name: 'apply_next_week', description: '保存', side_effect: true, available: true },
+  ];
+  await render({ key: 'progression', user: 'progression', session: 'test' });
+  const section = document.querySelector('.tool-service.training');
+  assert.ok(section);
+  assert.match(section.textContent, /训练计划与记录/);
+  const boxes = [...section.querySelectorAll('input')];
+  assert.equal(boxes.length, 2);
+  assert.ok(boxes.every(el => el.checked));
+  await act(async () => boxes[1].click());
+  assert.deepEqual(state.selectedTools, ['suggest_next_week']);
+  await act(async () => boxes[0].click());
+  assert.deepEqual(state.selectedTools, []);
+  await render({ key: 'progression', user: 'progression', session: 'test', busy: true });
+  assert.ok([...document.querySelectorAll('input')].every(el => el.disabled));
+});

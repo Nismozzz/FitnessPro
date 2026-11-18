@@ -58,3 +58,4 @@
 .tool-service small, .tool-selection-note { opacity: .7; }
 [data-theme="dark"] .tool-selector-panel { background: #222725; color: #eee; }
 .composer-bottom > .model-selector { margin-right: auto; }
+.execution-progress-toggle{display:flex;align-items:center;gap:7px;cursor:pointer;margin-bottom:12px;width:fit-content}.execution-progress-toggle input{accent-color:var(--orange);cursor:pointer}

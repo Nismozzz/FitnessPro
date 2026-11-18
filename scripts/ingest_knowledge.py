@@ -34,6 +34,9 @@ async def ingest(raw_dir: Path, index_dir: Path, *, skip_embed=False, chunk_size
             LocalVectorStore([c.id for c in chunks], vectors, {
                 'embedding_model': settings.embedding.model, 'catalog_hash': catalog_hash(chunks),
             }).save(staging)
+        if not skip_embed:
+            from app.rag.storage import publish_store
+            await asyncio.to_thread(publish_store, staging, 'articles')
         (staging / 'manifest.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding='utf-8')
         # 同一文件系统重命名，保留上一版备份直到切换成功。
         backup = index_dir.with_name(index_dir.name + '.previous')

@@ -22,6 +22,7 @@ import logging
 import time
 import uuid
 from collections.abc import AsyncIterator
+from contextlib import aclosing
 from typing import Any
 
 from app.agent.citations import EvidenceRegistry, KNOWLEDGE_TOOLS
@@ -95,6 +96,9 @@ class AgentLoop:
                     "content": "本轮为收尾回答，不能再调用工具。只根据已有成功工具结果中实际可见的信息回答，继续遵守依据与忠实性规则；未检索到的动作事实、未获取的详情和被截断的内容不得凭常识补齐。资料不足时只回答有依据的部分并明确说明缺失；没有依据时说明无法据此回答。拟定计划参数仍须标明为建议，不能说成知识库事实。若计划未保存成功，明确说明尚未保存和剩余步骤，不得声称已完成。不要叙述内部推理过程。",
                 }]
 
+            yield AgentEvent("progress", {"phase": "waiting", "iteration": iteration})
+            last_phase = "waiting"
+            last_progress = time.monotonic()
             content_parts: list[str] = []
             reasoning_parts: list[str] = []
             pending: dict[int, dict[str, str]] = {}
@@ -111,6 +115,11 @@ class AgentLoop:
                     if delta is None:
                         continue
                     reasoning = getattr(delta, "reasoning_content", None)
+                    phase = ("reasoning" if reasoning else "tool_arguments" if delta.tool_calls
+                             else "answering" if delta.content else None)
+                    if phase and (phase != last_phase or time.monotonic() - last_progress >= 1):
+                        yield AgentEvent("progress", {"phase": phase, "iteration": iteration})
+                        last_phase, last_progress = phase, time.monotonic()
                     if reasoning:
                         reasoning_parts.append(reasoning)
                     if delta.content:
@@ -148,6 +157,8 @@ class AgentLoop:
                 return
 
             content = "".join(content_parts)
+
+            yield AgentEvent("progress", {"phase": "model_done", "iteration": iteration})
 
             if not pending:
                 cleaned, citations, invalid = evidence.resolve(content)
@@ -292,8 +303,9 @@ class AgentLoop:
     async def _stream_with_deadline(self, messages, tools, remaining, overrides):
         # SDK timeout 是网络读超时，不是整条流的总时限。
         async with asyncio.timeout(remaining):
-            async for chunk in self.llm.stream(messages, tools=tools, **overrides):
-                yield chunk
+            async with aclosing(self.llm.stream(messages, tools=tools, **overrides)) as stream:
+                async for chunk in stream:
+                    yield chunk
 
     @staticmethod
     def _done(status: str, iterations: int, usage: dict, tool_calls: int) -> AgentEvent:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -12,7 +13,7 @@ from app.rag.bm25 import BM25Index
 from app.rag.embeddings import create_embedder
 from app.rag.reranker import Reranker
 from app.rag.retriever import KnowledgeBaseNotReady, SearchHit, SearchResult, rrf_fuse
-from app.rag.vector_store import LocalVectorStore
+from app.rag.storage import load_store
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +44,7 @@ class ArticleRetriever:
         store, embedder, reranker = None, None, None
         if enable_dense:
             try:
-                store = LocalVectorStore.load(directory)
+                store = load_store(directory)
                 if store is None:
                     raise ValueError('缺少向量索引')
                 if store.meta.get('embedding_model') != settings.embedding.model or store.meta.get('catalog_hash') != catalog_hash(chunks) or store.ids != [c.id for c in chunks]:
@@ -85,7 +86,7 @@ class ArticleRetriever:
         dense, sparse = [], []
         if mode != 'bm25' and self.vector_store is not None and self.embedder is not None:
             try:
-                dense = self.vector_store.search(await self.embedder.embed_query(query), cfg.dense_top_k)
+                dense = await asyncio.to_thread(self.vector_store.search, await self.embedder.embed_query(query), cfg.dense_top_k)
             except Exception:
                 warnings.append('文献向量检索暂不可用，降级关键词检索')
         if mode != 'dense':

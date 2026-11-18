@@ -192,10 +192,18 @@ class KnowledgeSettings(BaseModel):
     chunk_size: int = Field(default=900, ge=100, le=2000)
 
 
+class VectorStoreSettings(BaseModel):
+    type: Literal["local", "qdrant"] = "local"
+    url: str = "http://localhost:6333"
+    collection_prefix: str = "fitnesspro"
+    timeout: float = 30.0
+
+
 class Settings(BaseModel):
     timezone: str = "Asia/Shanghai"
     cors_origins: list[str] = Field(default_factory=list)
     database_url: str
+    vector_store: VectorStoreSettings = Field(default_factory=VectorStoreSettings)
     llm: LLMSettings
     embedding: EmbeddingSettings = Field(default_factory=EmbeddingSettings)
     reranker: RerankerSettings = Field(default_factory=RerankerSettings)

@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from collections import OrderedDict, defaultdict
@@ -24,6 +25,7 @@ from app.rag.embeddings import Embedder, create_embedder
 from app.rag.reranker import Reranker
 from app.rag.schema import LEVEL_ORDER, ExerciseDoc, ExerciseFilter
 from app.rag.vector_store import LocalVectorStore
+from app.rag.storage import load_store
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +102,14 @@ class ExerciseRetriever:
             )
         docs = [ExerciseDoc.from_model(r) for r in rows]
 
-        store = LocalVectorStore.load(resolve_path(settings.data.index_dir)) if enable_dense else None
+        try:
+            store = await asyncio.to_thread(load_store, resolve_path(settings.data.index_dir)) if enable_dense else None
+        except Exception as exc:
+            logger.warning("向量库加载失败，仅使用 BM25: %s", type(exc).__name__)
+            store = None
+        if store is not None and set(store.ids) != set(d.id for d in docs):
+            logger.warning("向量索引与动作 ID 不一致，禁用向量检索")
+            store = None
         embedder: Embedder | None = None
         if store is None and enable_dense:
             logger.warning("未找到向量索引，仅使用 BM25 检索")
@@ -218,7 +227,7 @@ class ExerciseRetriever:
         if mode != "bm25" and self.vector_store is not None:
             try:
                 qvec = await self._embed_query(query)
-                dense = self.vector_store.search(qvec, self.cfg.dense_top_k, allowed)
+                dense = await asyncio.to_thread(self.vector_store.search, qvec, self.cfg.dense_top_k, allowed)
             except Exception as exc:
                 logger.warning("向量检索失败，降级为关键词检索：%s", exc)
                 warnings.append("向量检索暂不可用，本次结果仅基于关键词匹配")

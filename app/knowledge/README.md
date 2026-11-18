@@ -28,7 +28,7 @@ review_note: 摘录未核对全文；待核对的具体限制或冲突
 
 ## 检索、引用与评测
 
-`search_knowledge_articles` 只读检索；复用 BM25、LocalVectorStore、Embedding、RRF 与 Reranker，不混入动作库。返回候选不等于已证明支持用户问题；证据不足时回答须明确说明，联网只补足缺失内容。
+`search_knowledge_articles` 只读检索；复用 BM25、Qdrant（可配置本地向量库）、Embedding、RRF 与 Reranker，不混入动作库。返回候选不等于已证明支持用户问题；证据不足时回答须明确说明，联网只补足缺失内容。
 
 引用按完整片段纳入预算，超出预算整块省略，不截断证据 JSON。前端可点击文献引用查看作者、链接、章节、原文与待核对说明；历史引用使用回答时的快照。文献工具结果复用现有 RAGAS 旁路评分，但 RAGAS 忠实度只判断回答与摘录是否一致，不负责验证摘录是否准确反映论文全文。
 

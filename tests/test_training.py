@@ -268,7 +268,7 @@ async def test_profile_scene_normalization_and_legacy_equipment(training):
     assert 'cable' not in effective_equipment(profile) and 'machine' in effective_equipment(profile)
 
 
-async def test_additive_upgrade_preserves_existing_profile_data(tmp_path, monkeypatch):
+async def test_unversioned_database_requires_explicit_adoption(tmp_path, monkeypatch):
     from sqlalchemy import inspect, text
     from sqlalchemy.ext.asyncio import create_async_engine
     from app.database import session
@@ -278,11 +278,11 @@ async def test_additive_upgrade_preserves_existing_profile_data(tmp_path, monkey
         await conn.execute(text("INSERT INTO user_profiles (user_id, notes) VALUES ('legacy', '保留原档案')"))
     monkeypatch.setattr(session, 'engine', legacy_engine)
     try:
-        await session.init_db()
-        await session.init_db()  # Repeated startup must remain safe.
+        with pytest.raises(RuntimeError, match='scripts.adopt_legacy_db'):
+            await session.init_db()
         async with legacy_engine.connect() as conn:
             columns = await conn.run_sync(lambda c: {x['name'] for x in inspect(c).get_columns('user_profiles')})
-            assert {'training_location', 'excluded_equipment'} <= columns
+            assert columns == {'user_id', 'notes'}
             assert (await conn.execute(text("SELECT notes FROM user_profiles WHERE user_id='legacy'"))).scalar() == '保留原档案'
     finally:
         await legacy_engine.dispose()

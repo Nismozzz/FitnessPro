@@ -71,6 +71,12 @@ async def chat(body: ChatRequest, user_id: str = Depends(get_current_user_id)) -
     )
 
 
+@router.post("/turns/{request_id}/cancel")
+async def cancel_turn(request_id: str, user_id: str = Depends(get_current_user_id)) -> dict[str, Any]:
+    cancelled = await agent_service.cancel_turn(user_id, request_id)
+    return {"cancelled": cancelled, "status": "cancelled" if cancelled else "finished_or_not_found"}
+
+
 @router.get("/sessions")
 async def list_sessions(user_id: str = Depends(get_current_user_id)) -> list[dict[str, Any]]:
     return [

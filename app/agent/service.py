@@ -2,7 +2,7 @@
 Agent 会话服务：会话归属校验 → 构建上下文 → 执行循环 → 持久化 → 后台压缩与记忆提取。
 
 Agent 在独立的后台任务中运行，通过队列把事件推给 SSE 连接；客户端断开后任务仍会
-跑完并保存结果（进程重启后的恢复不在本阶段范围内）。同一会话的多轮请求用锁串行化，
+跑完并保存结果；显式取消会中断任务（进程重启后的恢复不在本阶段范围内）。同一会话的多轮请求用锁串行化，
 保证消息 seq 连续、上下文一致。
 """
 
@@ -41,6 +41,7 @@ def make_title(message: str) -> str:
 class AgentService:
     def __init__(self) -> None:
         self._locks: dict[str, asyncio.Lock] = {}
+        self._turns: dict[str, tuple[str, asyncio.Task]] = {}
         self._tools = build_default_tools()
         self._builder = ContextBuilder()
 
@@ -81,9 +82,33 @@ class AgentService:
     ) -> asyncio.Queue[AgentEvent | None]:
         """启动一轮对话，返回事件队列；队列以 None 结尾。调用前必须完成 prepare_session。"""
         queue: asyncio.Queue[AgentEvent | None] = asyncio.Queue()
+        request_id = (trace_context.get().request_id if trace_context.get() else None) or new_id()
+        queue.put_nowait(AgentEvent("session", {"session_id": session_id, "request_id": request_id}))
         with trace_scope(user_id=user_id, session_id=session_id, module="agent"):
-            spawn(self._run_turn(user_id, session_id, message, queue, model_tier, selected_tools), name=f"turn:{session_id}")
+            task = spawn(self._run_turn(user_id, session_id, message, queue, model_tier, selected_tools), name=f"turn:{session_id}")
+        self._turns[request_id] = (user_id, task)
+
+        def finished(completed):
+            self._turns.pop(request_id, None)
+            # A queued task can be cancelled before its coroutine starts.
+            if completed.cancelled():
+                queue.put_nowait(AgentEvent("done", {"status": "cancelled"}))
+                queue.put_nowait(None)
+
+        task.add_done_callback(finished)
         return queue
+
+    async def cancel_turn(self, user_id: str, request_id: str) -> bool:
+        entry = self._turns.get(request_id)
+        if entry is None or entry[0] != user_id:
+            return False
+        task = entry[1]
+        if task.done():
+            return False
+        if not task.cancelling():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        return True
 
     async def _run_turn(
         self, user_id: str, session_id: str, message: str, queue: asyncio.Queue, model_tier: Tier = "normal", selected_tools: list[str] | None = None
@@ -92,8 +117,6 @@ class AgentService:
         final_answer = ""
         try:
             async with self._lock(session_id):
-                await queue.put(AgentEvent("session", {"session_id": session_id, "request_id": trace_context.get().request_id if trace_context.get() else None}))
-
                 built = await self._builder.build(
                     session_id=session_id, user_id=user_id, user_message=message
                 )
@@ -151,6 +174,9 @@ class AgentService:
                     ),
                     name=f"memory:{session_id}",
                 )
+        except asyncio.CancelledError:
+            if not terminal_sent:
+                await queue.put(AgentEvent("done", {"status": "cancelled"}))
         except Exception:
             logger.exception("会话 %s 处理失败", session_id)
             if not terminal_sent:

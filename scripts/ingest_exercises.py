@@ -238,6 +238,8 @@ async def build_index(docs: list[ExerciseDoc]) -> None:
     )
     index_dir = resolve_path(settings.data.index_dir)
     store.save(index_dir)
+    from app.rag.storage import publish_store
+    await asyncio.to_thread(publish_store, index_dir, "exercises")
     logger.info("向量索引已保存到 %s（维度 %d）", index_dir, store.dim)
 
 

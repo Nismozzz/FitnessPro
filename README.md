@@ -14,7 +14,7 @@ FitnessPro 是一个基于大模型 Agent 的健身助手：用户通过对话�
 | 后端 | Python 3.12+、FastAPI、SQLAlchemy 2（异步）、Pydantic 2 |
 | 数据库 | SQLite（默认）/ PostgreSQL（asyncpg） |
 | 模型 | OpenAI 兼容接口（默认 DeepSeek；fast / normal 两档模型） |
-| 检索 | bge-m3 向量 + BM25（jieba 分词）→ RRF 融合 → bge-reranker 重排 |
+| 检索 | Qdrant + bge-m3 向量 + BM25（jieba 分词）→ RRF 融合 → bge-reranker 重排 |
 | 前端 | React 19、TypeScript、Vite 7、react-markdown |
 | 测试 | pytest + pytest-asyncio；前端 `node --test` |
 
@@ -173,7 +173,7 @@ cd frontend && npm test     # 前端
 ## 4. TodoList
 后台任务为进程内任务，进程重启后未完成的摘要和记忆提取会丢失；需要时改为持久化任务队列。
 会话锁为进程内锁，多进程部署需要换成分布式锁。
-token 为估算值；表结构由 create_all 创建，正式环境应引入 Alembic。
+token 为估算值；表结构使用 Alembic 版本化迁移，旧的无版本数据库需先备份并显式接管。
 
 ### 基础能力
 - [x] RAG 搭建，第一版知识库入库成功（过滤 → 向量 + BM25 → RRF → 重排）
@@ -241,11 +241,12 @@ token 为估算值；表结构由 create_all 创建，正式环境应引入 Alem
 - [ ] 按需拆分子 Agent
 
 ### 阶段 9：Docker 部署
-- [ ] 后端 Dockerfile
-- [ ] 前端 Dockerfile（构建后由 Nginx 提供静态文件并反向代理 API）
-- [ ] docker-compose：backend + frontend + PostgreSQL（+ Milvus 可选）
-- [ ] 引入 Alembic 管理表结构
-- [ ] 部署到云服务器
+- [x] 后端 Dockerfile（Python 3.12，多阶段构建，非 root，单 worker）
+- [x] 前端 Dockerfile（构建后由 Nginx 提供静态文件并反向代理 API，SSE 关闭缓冲）
+- [x] docker-compose：backend + frontend + PostgreSQL，迁移与入库一次性任务，命名卷持久化
+- [x] 引入 Alembic 管理表结构，提供无版本旧库检查与接管脚本
+
+部署命令、密钥、索引初始化、备份及旧库迁移见 [Docker 部署说明](deploy/README.md)。首次配置 `.env` 后执行 `docker compose up -d --build`。向量检索使用 Qdrant，动作/文献独立集合；复用原有向量迁移，操作见部署说明。
 
 ### 贯穿各阶段：安全与测试
 - [x] 越权：每个新增资源（计划、记录、统计）都写双用户互访测试（阶段 1 已覆盖）

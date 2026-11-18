@@ -84,7 +84,7 @@ async def serialize_plan(db, row: WorkoutPlan) -> dict:
     return data
 
 
-async def save_plan(user_id: str, plan: PlanDraft, parent_id: str | None = None, require_active_parent: bool = False) -> dict:
+async def save_plan(user_id: str, plan: PlanDraft, parent_id: str | None = None, require_active_parent: bool = False, *, expected_history: dict | None = None) -> dict:
     profile, docs = await validation_inputs(user_id, plan)
     validation = validate_plan(plan, profile, docs)
     if not validation["valid"]:
@@ -93,6 +93,17 @@ async def save_plan(user_id: str, plan: PlanDraft, parent_id: str | None = None,
     content_hash = digest(data)
     async with SessionLocal() as db:
         await lock_user(db, user_id)
+        # Recheck evidence under the same user lock/transaction as draft creation.
+        # Logging and deletion acquire this lock too, so evidence cannot change
+        # between this check and commit (SQLite and PostgreSQL).
+        if expected_history is not None:
+            records = (await db.execute(select(WorkoutLog.id, WorkoutLog.content_hash, WorkoutLog.plan_day_id)
+                       .where(WorkoutLog.user_id == user_id,
+                              WorkoutLog.performed_at >= expected_history["start"],
+                              WorkoutLog.performed_at < expected_history["end"])
+                       .order_by(WorkoutLog.performed_at, WorkoutLog.id))).all()
+            if [tuple(row) for row in records] != expected_history["records"]:
+                raise TrainingError("训练记录已变化，请重新查看并确认下周建议", 409)
         parent = await owned_plan(db, user_id, parent_id) if parent_id else None
         if require_active_parent and (parent is None or parent.status != "active"):
             raise TrainingError("当前计划已变化，请重新生成建议", 409)

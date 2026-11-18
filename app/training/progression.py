@@ -84,7 +84,7 @@ def analyze_exercise(prescription, doc: dict, sessions: list[dict], completed_we
     for session in sessions:
         day = session["date"]
         week = day - timedelta(days=day.weekday())
-        if week not in weeks:
+        if week not in weeks or outcome(session) == "unknown":
             continue
         for entry in session["sets"]:
             estimate = epley(entry["weight_kg"], entry["reps"], doc.get("equipment")) if entry["completed"] else None
@@ -98,7 +98,7 @@ def analyze_exercise(prescription, doc: dict, sessions: list[dict], completed_we
     return None
 
 
-async def suggest_next_week(user_id: str, plan_id: str | None = None) -> dict:
+async def suggest_next_week(user_id: str, plan_id: str | None = None, *, _history_guard: dict | None = None) -> dict:
     source = await service.get_plan(user_id, plan_id) if plan_id else await service.active_plan(user_id)
     if source is None:
         raise service.TrainingError("请先激活一份训练计划", 404)
@@ -121,6 +121,9 @@ async def suggest_next_week(user_id: str, plan_id: str | None = None) -> dict:
                                                         WorkoutLog.performed_at < end.replace(tzinfo=None))
                                  .order_by(WorkoutLog.performed_at, WorkoutLog.id))).all()
         entries = (await db.scalars(select(WorkoutSet).where(WorkoutSet.log_id.in_([log.id for log in logs])))).all() if logs else []
+    if _history_guard is not None:
+        _history_guard.update(start=start.replace(tzinfo=None), end=end.replace(tzinfo=None),
+                              records=[(log.id, log.content_hash, log.plan_day_id) for log in logs])
     by_log = defaultdict(lambda: defaultdict(list))
     for entry in entries:
         by_log[entry.log_id][entry.exercise_id].append({k: getattr(entry, k) for k in ("set_no", "reps", "duration_seconds", "weight_kg", "completed")})
@@ -184,7 +187,8 @@ async def suggest_next_week(user_id: str, plan_id: str | None = None) -> dict:
 
 
 async def apply_next_week(user_id: str, plan_id: str, body: ApplyNextWeek) -> dict:
-    suggestion = await suggest_next_week(user_id, plan_id)
+    history_guard = {}
+    suggestion = await suggest_next_week(user_id, plan_id, _history_guard=history_guard)
     if suggestion["suggestion_id"] != body.suggestion_id:
         raise service.TrainingError("记录、档案或建议已变化，请重新查看并确认下周建议", 409)
     plan = PlanDraft.model_validate(suggestion["proposed_plan"])
@@ -201,4 +205,4 @@ async def apply_next_week(user_id: str, plan_id: str, body: ApplyNextWeek) -> di
         day.exercises[choice.position].exercise_id = choice.exercise_id
         day.exercises[choice.position].target_weight_kg = None
     plan = PlanDraft.model_validate(plan.model_dump())
-    return await service.save_plan(user_id, plan, parent_id=plan_id, require_active_parent=True)
+    return await service.save_plan(user_id, plan, parent_id=plan_id, require_active_parent=True, expected_history=history_guard)

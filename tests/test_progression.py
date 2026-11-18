@@ -176,3 +176,61 @@ async def test_future_records_do_not_drive_progression(training, monkeypatch):
     monkeypatch.setattr(progression, 'datetime', EarlierDatetime)
     result = await progression.suggest_next_week(uid)
     assert not result['adjustments']
+
+
+@pytest.mark.parametrize('invalid', ['missing_set', 'duplicate_set', 'unknown_weight', 'different_prescription'])
+def test_incomplete_or_incompatible_weeks_do_not_trigger_replacement(invalid):
+    rows = sessions(reps=9)
+    for row in rows:
+        if invalid == 'missing_set':
+            row['sets'].pop()
+        elif invalid == 'duplicate_set':
+            row['sets'][-1]['set_no'] = 1
+        elif invalid == 'unknown_weight':
+            row['sets'][-1]['weight_kg'] = None
+        else:
+            row['prescription'] = {**prescription().model_dump(), 'sets': 4}
+    assert analyze_exercise(prescription(), DOC, rows, date(2026, 12, 7)) is None
+
+
+@pytest.mark.parametrize('change', ['delete', 'insert', 'unlink'])
+async def test_evidence_changed_before_save_is_rejected_atomically(training, monkeypatch, change):
+    from sqlalchemy import delete, select
+    from app.database.models import WorkoutLog, WorkoutSet, WorkoutPlan
+    from app.database.session import SessionLocal
+    uid, _, ids, plan = await seed(training, monkeypatch, reps=10)
+    # Associate a record with the plan so unlinking (as in plan deletion) is observable.
+    async with SessionLocal() as db:
+        log = await db.scalar(select(WorkoutLog).where(WorkoutLog.user_id == uid))
+        log.plan_day_id = plan['days'][0]['id']
+        log_id = log.id
+        await db.commit()
+    suggestion = await progression.suggest_next_week(uid, plan['id'])
+    original_save = service.save_plan
+
+    async def concurrent_change_then_save(*args, **kwargs):
+        # Deterministically interleave a second request after recomputation,
+        # immediately before save_plan acquires the transaction's user lock.
+        if change == 'insert':
+            await service.log_workout(uid, LogCreate.model_validate({
+                'idempotency_key': 'concurrent-record', 'performed_at': '2026-12-06T19:00:00+08:00',
+                'duration_min': 30, 'sets': [{'exercise_id': ids[0], 'set_no': 1, 'reps': 9, 'weight_kg': 40}]}))
+        else:
+            async with SessionLocal() as db:
+                await service.lock_user(db, uid)
+                if change == 'delete':
+                    await db.execute(delete(WorkoutSet).where(WorkoutSet.log_id == log_id))
+                    await db.execute(delete(WorkoutLog).where(WorkoutLog.id == log_id))
+                else:
+                    log = await db.get(WorkoutLog, log_id)
+                    log.plan_day_id = None
+                await db.commit()
+        return await original_save(*args, **kwargs)
+
+    monkeypatch.setattr(service, 'save_plan', concurrent_change_then_save)
+    with pytest.raises(service.TrainingError, match='记录已变化') as error:
+        await progression.apply_next_week(uid, plan['id'], ApplyNextWeek(suggestion_id=suggestion['suggestion_id']))
+    assert error.value.status == 409
+    async with SessionLocal() as db:
+        plans = (await db.scalars(select(WorkoutPlan).where(WorkoutPlan.user_id == uid))).all()
+        assert len(plans) == 1 and plans[0].status == 'active'

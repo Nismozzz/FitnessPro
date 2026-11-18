@@ -5,6 +5,7 @@ from pydantic import Field
 from app.agent.tools.base import BaseTool, EmptyParams, ToolError
 from app.training import service
 from app.training.schema import LogCreate, PlanDraft, Replacement, StrictModel
+from app.training.progression import ApplyNextWeek
 from app.training.stats import weekly_stats
 
 
@@ -95,3 +96,37 @@ class GetTrainingStatsTool(BaseTool):
 
     async def run(self, params, ctx):
         return await business(weekly_stats(ctx.user_id, params.week_start, params.plan_id))
+
+
+class SuggestNextWeekParams(StrictModel):
+    plan_id: str | None = Field(None, description="可选；默认当前激活的计划")
+
+
+class SuggestNextWeekTool(BaseTool):
+    name = "suggest_next_week"
+    description = "根据真实训练记录，返回下周加重、减重、停滞替换建议及理由、候选、校验结果。只预览，不保存。向用户解释后等待确认。"
+    Params = SuggestNextWeekParams
+    timeout = 90
+
+    async def run(self, params, ctx):
+        from app.training.progression import suggest_next_week
+        result = await business(suggest_next_week(ctx.user_id, params.plan_id))
+        # Full draft is kept server-side through deterministic recomputation, not needed by the LLM.
+        return {k: v for k, v in result.items() if k != "proposed_plan"}
+
+
+class ApplyNextWeekParams(ApplyNextWeek):
+    plan_id: str = Field(description="suggest_next_week 返回的 source_plan_id")
+
+
+class ApplyNextWeekTool(BaseTool):
+    name = "apply_next_week"
+    description = "仅在用户明确确认下周调整建议后调用，携带 suggestion_id 与用户选择的替换候选（不选则保留）。保存 version+1 草稿，仍需用户在计划页确认激活；旧计划届时归档。建议过期需重新预览确认。"
+    Params = ApplyNextWeekParams
+    side_effect = True
+    timeout = 90
+
+    async def run(self, params, ctx):
+        from app.training.progression import apply_next_week
+        body = ApplyNextWeek.model_validate(params.model_dump(exclude={"plan_id"}))
+        return compact_plan(await business(apply_next_week(ctx.user_id, params.plan_id, body)))

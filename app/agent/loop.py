@@ -220,7 +220,7 @@ class AgentLoop:
 
             # Lock the whole batch before executing anything, even if a write is
             # listed before web_search. This immutable context persists this turn.
-            if any(call.name == "web_search" for call in calls):
+            if any(call.name in {"web_search", "identify_equipment"} for call in calls):
                 ctx = replace(ctx, allow_side_effects=False)
             skill_visible_to_model = training_skill_loaded
             pending_skill_message = None

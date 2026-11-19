@@ -55,12 +55,13 @@ class AgentService:
 
     def tool_catalog(self) -> list[dict[str, Any]]:
         import os
+        from app.vision.service import is_available
         return [
             {"name": tool.name, "description": tool.description,
              "side_effect": tool.side_effect,
-             "available": tool.name != "web_search" or bool(
+             "available": is_available() if tool.name == "identify_equipment" else tool.name != "web_search" or bool(
                  settings.web_search.enabled and os.getenv(settings.web_search.api_key_env)),
-             "unavailable_reason": "请先配置并启用联网搜索" if tool.name == "web_search" and not (
+             "unavailable_reason": "请先配置并启用视觉模型" if tool.name == "identify_equipment" and not is_available() else "请先配置并启用联网搜索" if tool.name == "web_search" and not (
                  settings.web_search.enabled and os.getenv(settings.web_search.api_key_env)) else None}
             for tool in self._tools
         ]
@@ -135,7 +136,8 @@ class AgentService:
                 done_event: AgentEvent | None = None
                 try:
                     async for event in loop.run(
-                        built.messages, ToolContext(user_id=user_id, session_id=session_id), transcript
+                        built.messages, ToolContext(user_id=user_id, session_id=session_id,
+                                                    allow_side_effects="[图片附件：" not in message), transcript
                     ):
                         if event.type == "done":
                             done_event = event
@@ -164,7 +166,7 @@ class AgentService:
                 )
 
             spawn(context_compressor.maybe_compress(session_id), name=f"compress:{session_id}")
-            if final_answer and settings.memory.auto_extract:
+            if final_answer and settings.memory.auto_extract and "[图片附件：" not in message:
                 spawn(
                     extract_memories(
                         user_id=user_id,

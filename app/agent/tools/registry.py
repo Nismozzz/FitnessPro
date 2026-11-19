@@ -11,10 +11,12 @@ def build_default_tools() -> list[BaseTool]:
     from app.agent.tools.time_tool import CurrentTimeTool
     from app.agent.tools.skill_tools import LoadTrainingPlanSkillTool
     from app.agent.tools.web_search import WebSearchTool
+    from app.agent.tools.vision_tools import IdentifyEquipmentTool
 
     from app.agent.tools.plan_tools import DraftWeeklyPlanTool, SavePlanTool, GetActivePlanTool, UpdatePlanExerciseTool, LogWorkoutTool, GetTrainingStatsTool, SuggestNextWeekTool, ApplyNextWeekTool
 
     return [
+        IdentifyEquipmentTool(),
         LoadTrainingPlanSkillTool(),
         DraftWeeklyPlanTool(), SavePlanTool(), GetActivePlanTool(), UpdatePlanExerciseTool(), LogWorkoutTool(), GetTrainingStatsTool(),
         SuggestNextWeekTool(), ApplyNextWeekTool(),

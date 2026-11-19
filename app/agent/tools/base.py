@@ -153,7 +153,7 @@ class ToolExecutor:
         if tool is None:
             return ToolResult(False, error=f"未知工具：{call.name}，可用工具：{', '.join(self._tools)}")
         if tool.side_effect and not ctx.allow_side_effects:
-            return ToolResult(False, error="联网搜索轮次仅允许读取信息，不能修改记忆、画像、计划或训练记录。请让用户下一轮单独提出修改请求。")
+            return ToolResult(False, error="联网搜索或图片识别轮次仅允许读取信息，不能修改记忆、画像、计划或训练记录。请让用户下一轮单独提出修改请求。")
         if call.parse_error:
             return ToolResult(False, error=f"参数不是合法的 JSON 对象（{call.parse_error}），请重新生成参数")
         try:

@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse
 from app.training.service import TrainingError
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import agent, auth, evaluations, knowledge, memories, users, training, observability
+from app.api import agent, auth, evaluations, knowledge, memories, users, training, observability, images
 from app.config import settings
 from app.database.session import engine, init_db
 from app.rag.retriever import init_retriever
@@ -43,7 +43,7 @@ app.add_middleware(
 )
 
 api = APIRouter(prefix="/api/v1")
-for module in (auth, users, memories, agent, knowledge, training, evaluations, observability):
+for module in (auth, users, memories, agent, knowledge, training, evaluations, observability, images):
     api.include_router(module.router)
 app.include_router(api)
 

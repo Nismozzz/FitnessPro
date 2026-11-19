@@ -124,3 +124,45 @@ docker compose up -d backend frontend
 ### Qdrant 迁移验证（2026-11-18）
 
 已在当前 `fitnesspro` Compose 项目完成真实迁移：876 个动作向量、17 个文献片段向量，均为 1024 维。复用已有向量，没有调用模型 API。验证两套生产检索器加载 Qdrant、按原始 ID 过滤检索、与原 NumPy 余弦分数一致。重建 Qdrant 容器后，两套集合仍可检索，前端代理 `/health` 正常；后端回归测试 172 项通过。原 PostgreSQL 与本地向量文件保留。
+
+## 器械图片识别（LLM_VISION）
+
+聊天框支持上传一张 JPEG / PNG / WebP 器械照片（默认最大 8 MiB、2000 万像素）。照片上传后点击发送，Agent 调用 `identify_equipment`，视觉模型返回候选、可见特征与补拍建议。用户下一轮确认器械后，再通过 `search_exercises` / `get_exercise_detail` 推荐和讲解动作；无匹配时明确告知，不将所有 `machine` 动作当成适用。此期不支持体态评估。
+
+### 配置与启动
+
+`llm.vision` 是独立的 OpenAI Chat Completions 兼容视觉接口，必须支持 `image_url`（Base64 data URL）及 JSON 输出。不能直接复用不支持图片的文本模型。当前启用 SiliconFlow `Qwen/Qwen3-VL-32B-Instruct`，已通过模型列表核实可用；权限及价格以供应商为准，可替换为其他兼容视觉模型。
+
+1. 默认复用 `.env` 的 `EMBEDDING_API_KEY`；如需独立 Key，将 `llm.vision.api_key_env` 改为 `VISION_LLM_API_KEY` 并设置对应环境变量（不要提交到 Git）。
+2. 核对 `config.yml` 中 `llm.vision.model` / `base_url` 和 `vision.enabled: true`。
+3. 构建并更新前后端（不需要重新入库、不改数据库结构）：
+
+```bash
+docker compose build backend frontend
+docker compose up -d --no-deps backend frontend
+```
+
+仅修改挂载的 `config.yml` 时可 `docker compose restart backend`；修改 `.env` 后必须 `docker compose up -d --no-deps --force-recreate backend`，单纯 restart 不会刷新容器环境。
+
+未启用或缺少 Key 时，前端显示配置提示，文字聊天保持可用。工具选择中需要启用“器械图片识别”；确认后推荐动作还需启用动作库工具。识别耗时沿用执行面板工具计时，取消按钮会取消正在等待的视觉请求（供应商是否停止计费取决于其实现）。识别阶段仅允许读取信息，不能自动改画像、记忆或训练计划。
+
+### 存储和隐私
+
+- 上传原始图片经实际解码校验、方向纠正、长边缩至 1600 像素，重新编码 JPEG 并移除 EXIF 等元信息；不保存原图，不向模型发送用户画像或历史全文。
+- 照片保存在 `data/uploads/equipment/<用户哈希>/<随机ID>.jpg`，复用现有 Docker `app_data` 卷。备份该卷会包含照片。
+- 图片读取和删除均需用户鉴权，不能凭 URL 跨用户读取，无公开静态目录。前端用鉴权请求读取 Blob，URL 不携带 JWT。
+- 每次发送最多一张；对话记录只保存图片 ID 和文字识别结果，不保存 Base64。刷新后可回看照片；删除照片后无法再次查看/识别，但既有文字分析仍在，删除会话会删除会话内图片及消息。
+- 未发送照片可在预览中删除，切换会话/新建对话/主动退出时会尝试清理草稿照片。浏览器异常退出、上传后刷新或网络中断可能留下未引用文件；当前不自动过期清理，需管理员按实际保留政策管理该目录。
+- 上传区明确提示图片会发送到哪个视觉供应商。此功能只收器械照片，不用于体态、疾病或身份判断。
+- Nginx 上传上限已调整为 9 MiB；提高后端 `max_upload_bytes` 时需同步检查该限制。
+
+### 验收
+
+自动化测试使用模拟视觉和聊天响应，覆盖上传格式/大小/像素限制、EXIF 去除、跨用户隔离、删除、结构化结果校验、不确定/非器械结果、图片聊天→确认→动作检索、历史回看和取消识别。实际识别准确率仍需配置真实视觉服务后，用全景、局部、模糊、相似器械和非器械图片验收。不会在默认测试中调用付费服务。
+
+### 图片功能验证（2026-11-19）
+
+- 本地后端 183 项、前端 33 项测试通过；前后端生产构建通过。新后端镜像在无网络、无生产数据卷的临时容器内回归 183 项通过。
+- 复用现有 SiliconFlow Key，模型列表确认 `Qwen/Qwen3-VL-32B-Instruct` 可用；公开哑铃卧推示意图真实调用返回哑铃相关候选和确认要求，本地约 8.3 秒、Docker 内约 7.5 秒。这只是接口烟雾测试，不代表真实健身房照片准确率。
+- 已更新当前 Docker 前后端；通过 Nginx 上传约 3 MiB PNG，验证重新编码 JPEG、私有鉴权读取、无缓存、卷内落盘和删除成功，临时账号与图片已清理。
+- 图片识别轮次在执行器层禁止写操作，并跳过后台个人记忆提取，避免将视觉推测写入档案或记忆。

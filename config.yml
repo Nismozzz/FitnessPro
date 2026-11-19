@@ -29,6 +29,9 @@ llm:
     temperature: 0.1
     max_tokens: 131072
     timeout: 120
+    extra_body:
+      thinking:
+        type: disabled
   normal:
     model: "deepseek-v4-pro"
     base_url: "https://api.deepseek.com"
@@ -36,6 +39,27 @@ llm:
     temperature: 0.1
     max_tokens: 131072
     timeout: 120
+    extra_body:
+      thinking:
+        type: enabled
+      reasoning_effort: low
+
+  vision:
+    model: "Qwen/Qwen3-VL-32B-Instruct"
+    base_url: "https://api.siliconflow.cn/v1"
+    api_key_env: "EMBEDDING_API_KEY"  # 同属 SiliconFlow，复用现有 Key
+    temperature: 0.1
+    max_tokens: 2048
+    timeout: 120
+
+# 图片识别使用独立视觉模型，复用现有 SiliconFlow Embedding Key。
+# 如需独立 Key，将 llm.vision.api_key_env 改为 VISION_LLM_API_KEY。
+vision:
+  enabled: true
+  upload_dir: "data/uploads/equipment"
+  max_upload_bytes: 8388608   # 8 MiB，Nginx 上限为 9 MiB
+  max_pixels: 20000000
+  max_edge: 1600             # 自动缩图，移除 EXIF 后保存
 
 # -----------------------------------------------------------------------------
 # Embedding：默认走 OpenAI 兼容的 Embedding API（SiliconFlow 上的 bge-m3，中英双语）

@@ -46,6 +46,15 @@ class LLMProfile(BaseModel):
 class LLMSettings(BaseModel):
     fast: LLMProfile
     normal: LLMProfile
+    vision: LLMProfile | None = None
+
+
+class VisionSettings(BaseModel):
+    enabled: bool = False
+    upload_dir: str = "data/uploads/equipment"
+    max_upload_bytes: int = Field(default=8 * 1024 * 1024, ge=1024, le=20 * 1024 * 1024)
+    max_pixels: int = Field(default=20_000_000, ge=1_000_000, le=40_000_000)
+    max_edge: int = Field(default=1600, ge=512, le=2048)
 
 
 class EmbeddingSettings(BaseModel):
@@ -205,6 +214,7 @@ class Settings(BaseModel):
     database_url: str
     vector_store: VectorStoreSettings = Field(default_factory=VectorStoreSettings)
     llm: LLMSettings
+    vision: VisionSettings = Field(default_factory=VisionSettings)
     embedding: EmbeddingSettings = Field(default_factory=EmbeddingSettings)
     reranker: RerankerSettings = Field(default_factory=RerankerSettings)
     retrieval: RetrievalSettings = Field(default_factory=RetrievalSettings)

@@ -68,7 +68,8 @@ config.yml        非敏感配置（模型、检索、上下文、记忆等参�
 - 计划、计划日、计划动作、训练记录的数据模型；幂等保存（重复调用不产生重复数据）。
 - 计划规则校验器（纯代码）：器械可用性、档案完整性、训练天数、动作是否存在、热身/放松、肌群容量、伤病高风险动作等。
 - 训练场景选择、常见器械预设、不可用器械设置。
-- Agent 工具：`draft_weekly_plan`、`save_plan`、`get_active_plan`、`update_plan_exercise`、`log_workout`、`get_training_stats`。
+- Agent 工具：`draft_weekly_plan`、`save_plan`、`get_active_plan`、`update_plan_exercise`、`log_workout`、`get_training_stats`、`suggest_next_week`。
+- 下一周调整（双进阶，只生成草稿）：每一组都达到次数上限后才加重，杠铃、绳索、固定器械和曲杆 +2.5 kg，哑铃 +2 kg，壶铃 +4 kg，次数区间不变；徒手或弹力带则加次数，次数到该目标上限后加一组。未完成则减量。任一组 RPE ≥ 9.5 不加重。最近 3 次最好成绩都没有提高则记为停滞，并给出同器械、同主肌群的替换候选。没有完成记录的动作维持原处方。
 - 前端：周视图、训练记录页、训练统计（容量趋势、完成率、个人表现）。
 - 所有资源按用户隔离，已有双用户互访测试。
 
@@ -82,11 +83,21 @@ config.yml        非敏感配置（模型、检索、上下文、记忆等参�
 | Agent | `POST /agent/chat`（SSE）、`GET /agent/sessions`、`GET /agent/sessions/{id}/messages`、`DELETE /agent/sessions/{id}` |
 | 记忆 | `GET/POST /memories`、`POST /memories/{id}/confirm`、`POST /memories/{id}/reject`、`PATCH/DELETE /memories/{id}` |
 | 知识库 | `POST /knowledge/search`、`GET /knowledge/exercises/{id}`、`GET /knowledge/stats` |
-| 计划 | `POST /plans/validate`、`GET/POST /plans`、`GET /plans/active`、`GET /plans/{id}`、`POST /plans/{id}/activate`、`PATCH /plans/{id}/exercises` |
+| 计划 | `POST /plans/validate`、`GET/POST /plans`、`POST /plans/suggest`、`GET /plans/active`、`GET /plans/{id}`、`POST /plans/{id}/activate`、`PATCH /plans/{id}/exercises` |
 | 训练记录 | `GET/POST /logs`、`GET /logs/{id}`、`GET /stats/weekly` |
 | 健康检查 | `GET /health` |
 
 ## 3. 启动说明
+
+### 3.0 安装包
+
+给别人使用时，不需要安装 Python 或 Node。在项目根目录执行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\build_installer.ps1
+```
+
+生成 `release/FitnessPro-Setup.exe`。安装后从开始菜单或桌面打开 FitnessPro，在「连接设置」里填写模型密钥。数据库和密钥保存在 `%LOCALAPPDATA%\FitnessPro`。动作知识库没有打进安装包，检索功能需要另行导入。
 
 ### 3.1 环境要求
 - Python >= 3.12
@@ -105,6 +116,9 @@ pip install -r requirements.txt
 cp .env.example .env
 # 编辑 .env：LLM_API_KEY、FAST_LLM_API_KEY、EMBEDDING_API_KEY、RERANKER_API_KEY、JWT_SECRET
 # JWT_SECRET 生成：python -c "import secrets; print(secrets.token_urlsafe(48))"
+# 也可以不改 .env：登录后在侧栏「连接设置」填写模型名、接口地址和 API Key。
+# 保存后立即生效，写入 data/runtime_settings.json（不入库），并覆盖 .env 里的同名密钥。
+# 页面只显示密钥末四位。更换 Embedding 模型后需要重新入库。
 
 # 3) 导入动作知识库（首次必须执行，需要联网）
 python -m scripts.ingest_exercises
@@ -172,9 +186,9 @@ token 为估算值；表结构由 create_all 创建，正式环境应引入 Alem
 - [x] 测试
 
 ### 阶段 2：根据记录自动调整计划
-- [ ] 渐进超负荷规则
-- [ ] 停滞检测与动作替换
-- [ ] `suggest_next_week` 工具
+- [x] 渐进超负荷规则
+- [x] 停滞检测与动作替换
+- [x] `suggest_next_week` 工具
 
 ### 阶段 3：评测
 - [ ] 检索评测集与脚本
@@ -208,4 +222,4 @@ token 为估算值；表结构由 create_all 创建，正式环境应引入 Alem
 - [ ] 提示注入：用户输入、检索文档、搜索结果三类来源各有用例
 - [ ] 伤病场景：有伤病的用户不推荐对应高风险动作，回答包含就医提示
 - [x] 写操作幂等：重复调用 `save_plan` / `log_workout` 不产生重复数据（阶段 1 已覆盖）
-- [x] 每个阶段结束时更新 README 和测试，保持 `pytest` 全部通过（已更新至阶段 1）
+- [x] 每个阶段结束时更新 README 和测试，保持 `pytest` 全部通过（已更新至阶段 2）

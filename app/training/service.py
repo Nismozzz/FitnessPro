@@ -2,14 +2,17 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import timezone
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select, update
 
+from app.config import settings
 from app.database.models import Exercise, PlanDay, PlanExercise, User, WorkoutLog, WorkoutPlan, WorkoutSet, new_id
 from app.database.session import SessionLocal
 from app.memory.service import memory_service
+from app.training.progression import RULES, build_performances, progress_plan, rank_replacements
 from app.training.schema import LogCreate, PlanDraft, Replacement
 from app.training.validator import validate_plan
 from app.users.profile import get_profile
@@ -38,12 +41,67 @@ async def catalog(ids: set[str]) -> dict[str, dict]:
     return {row.id: snapshot(row) for row in rows}
 
 
-async def validation_inputs(user_id: str, plan: PlanDraft):
+async def profile_for_plan(user_id: str) -> dict:
     profile = await get_profile(user_id)
     active, _ = await memory_service.for_prompt(user_id)
     profile["injuries"] = list(profile.get("injuries") or []) + [m.content for m in active if m.kind == "injury"]
+    return profile
+
+
+async def validation_inputs(user_id: str, plan: PlanDraft):
+    profile = await profile_for_plan(user_id)
     docs = await catalog({e.exercise_id for d in plan.days for e in d.exercises})
     return profile, docs
+
+
+async def suggest_next_week(user_id: str, plan_id: str | None = None, week_start: date | None = None, replace_stalled: bool = False) -> dict:
+    tz = ZoneInfo(settings.timezone)
+    async with SessionLocal() as db:
+        if plan_id:
+            row = await owned_plan(db, user_id, plan_id)
+        else:
+            row = await db.scalar(select(WorkoutPlan).where(WorkoutPlan.user_id == user_id, WorkoutPlan.status == "active"))
+            if row is None:
+                raise TrainingError("没有使用中的计划，请先在计划页确认一份计划", 404)
+        source = PlanDraft.model_validate(row.draft)
+        source_id = row.id
+        target = week_start or (source.week_start + timedelta(days=7))
+        if target.weekday() != 0:
+            raise TrainingError("week_start 必须为周一", 422)
+        if target <= source.week_start:
+            raise TrainingError("下一周必须晚于来源计划周", 422)
+        serialized = await serialize_plan(db, row)
+        start = datetime.combine(source.week_start, time.min, tzinfo=tz).astimezone(timezone.utc).replace(tzinfo=None)
+        end = datetime.combine(source.week_start + timedelta(days=7), time.min, tzinfo=tz).astimezone(timezone.utc).replace(tzinfo=None)
+        day_ids = {day["weekday"]: day["id"] for day in serialized["days"]}
+        docs = {exercise["exercise_id"]: exercise["exercise"] for day in serialized["days"] for exercise in day["exercises"]}
+        exercise_ids = set(docs)
+        set_rows = []
+        if exercise_ids:
+            query = await db.execute(
+                select(WorkoutSet, WorkoutLog.performed_at, WorkoutLog.plan_day_id, WorkoutLog.id)
+                .join(WorkoutLog, WorkoutSet.log_id == WorkoutLog.id)
+                .where(WorkoutLog.user_id == user_id, WorkoutLog.performed_at < end,
+                       WorkoutSet.exercise_id.in_(exercise_ids))
+            )
+            for entry, performed_at, logged_day, log_id in query.all():
+                set_rows.append({
+                    "exercise_id": entry.exercise_id, "plan_day_id": logged_day, "performed_at": performed_at,
+                    "log_id": log_id, "reps": entry.reps, "duration_seconds": entry.duration_seconds,
+                    "weight_kg": entry.weight_kg, "rpe": entry.rpe, "completed": entry.completed,
+                })
+        equipments = {doc.get("equipment") for doc in docs.values() if doc.get("equipment")}
+        pool = []
+        if equipments:
+            pool = [snapshot(exercise) for exercise in (await db.scalars(select(Exercise).where(Exercise.equipment.in_(equipments)))).all()]
+            for item in pool:
+                docs.setdefault(item["id"], item)
+    profile = await profile_for_plan(user_id)
+    level = profile.get("experience_level") or "beginner"
+    candidates = {eid: rank_replacements(docs[eid], pool, level) for eid in exercise_ids if eid in docs}
+    result = progress_plan(source, build_performances(source, day_ids, set_rows, start, end, tz), docs, profile, candidates, replace_stalled, target)
+    return {"source_plan_id": source_id, "source_week": source.week_start.isoformat(), "week_start": target.isoformat(),
+            "saved": False, **result, "rules": RULES}
 
 
 async def check_plan(user_id: str, plan: PlanDraft) -> dict:

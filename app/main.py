@@ -5,13 +5,16 @@ from __future__ import annotations
 import logging
 from contextlib import asynccontextmanager
 
+from pathlib import Path
+
 from fastapi import APIRouter, FastAPI
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from app.training.service import TrainingError
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import agent, auth, knowledge, memories, users, training
-from app.config import settings
+from app.api import agent, auth, knowledge, memories, settings as provider_settings, users, training
+from app.config import bundle_root, settings
 from app.database.session import engine, init_db
 from app.rag.retriever import init_retriever
 from app.utils.background import drain
@@ -38,7 +41,7 @@ app.add_middleware(
 )
 
 api = APIRouter(prefix="/api/v1")
-for module in (auth, users, memories, agent, knowledge, training):
+for module in (auth, users, memories, agent, knowledge, training, provider_settings):
     api.include_router(module.router)
 app.include_router(api)
 
@@ -51,3 +54,9 @@ async def health() -> dict[str, str]:
 @app.exception_handler(TrainingError)
 async def training_error(_request, exc: TrainingError):
     return JSONResponse(status_code=exc.status, content={"detail": str(exc), "validation": exc.validation})
+
+
+_DIST = bundle_root() / "frontend" / "dist"
+if (_DIST / "index.html").is_file():
+    # 生产构建挂在 API 之后，浏览器打开 http://127.0.0.1:8000 即可使用
+    app.mount("/", StaticFiles(directory=_DIST, html=True), name="frontend")

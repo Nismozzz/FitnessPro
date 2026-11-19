@@ -4,7 +4,7 @@ from pydantic import Field
 
 from app.agent.tools.base import BaseTool, EmptyParams, ToolError
 from app.training import service
-from app.training.schema import LogCreate, PlanDraft, Replacement, StrictModel
+from app.training.schema import LogCreate, PlanDraft, Replacement, StrictModel, SuggestRequest
 from app.training.stats import weekly_stats
 
 
@@ -86,6 +86,15 @@ class LogWorkoutTool(BaseTool):
 class StatsParams(StrictModel):
     week_start: date = Field(description="查询周的周一")
     plan_id: str | None = Field(None, description="可选，指定同一周某个计划版本")
+
+
+class SuggestNextWeekTool(BaseTool):
+    name = "suggest_next_week"
+    description = "根据已有计划和本周实际完成组生成下一周草稿。每组都达到次数上限才加重或加次数；完不成则减量；连续三次最好成绩没有提高则标记停滞并给出同器械候选。replace_stalled 为 true 才把候选写入草稿。不保存、不激活。向用户解释 decisions 后，把 draft 原样交给 save_plan。没有完成记录不得声称已经进步。"
+    Params = SuggestRequest
+
+    async def run(self, params, ctx):
+        return await business(service.suggest_next_week(ctx.user_id, params.plan_id, params.week_start, params.replace_stalled))
 
 
 class GetTrainingStatsTool(BaseTool):

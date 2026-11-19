@@ -32,5 +32,8 @@ pyjwt>=2.8
 pytest>=8.0
 pytest-asyncio>=0.23
 
+# Windows 的 zoneinfo 需要这份时区数据；Linux 通常由系统提供
+tzdata>=2024.1
+
 # 可选：本地 Embedding（config.yml 中 embedding.provider=local 时需要）
 # sentence-transformers>=3.0

@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, Query
 
 from app.auth.security import get_current_user_id
 from app.training import service
-from app.training.schema import LogCreate, PlanDraft, Replacement
+from app.training.schema import LogCreate, PlanDraft, Replacement, SuggestRequest
 from app.training.stats import weekly_stats
 
 router = APIRouter(tags=["training"])
@@ -20,6 +20,11 @@ async def validate(body: PlanDraft, user_id: UserId):
 @router.get("/plans")
 async def plans(user_id: UserId):
     return await service.list_plans(user_id)
+
+
+@router.post("/plans/suggest")
+async def suggest(body: SuggestRequest, user_id: UserId):
+    return await service.suggest_next_week(user_id, body.plan_id, body.week_start, body.replace_stalled)
 
 
 @router.post("/plans", status_code=201)

@@ -183,7 +183,8 @@ async def test_ownership_every_plan_log_and_stats_route(training):
         for method, path, data in [('GET', f"/plans/{plan['id']}", None), ('POST', f"/plans/{plan['id']}/activate", None),
                                   ('PATCH', f"/plans/{plan['id']}/exercises", {"weekday": 0, "position": 0, "exercise": {"exercise_id": ids[1], "sets": 3, "reps_min": 8, "reps_max": 12}}),
                                   ('GET', f"/logs/{log['id']}", None), ('POST', '/logs', body),
-                                  ('GET', f"/stats/weekly?week_start=2026-11-16&plan_id={plan['id']}", None)]:
+                                  ('GET', f"/stats/weekly?week_start=2026-11-16&plan_id={plan['id']}", None),
+                                  ('POST', '/plans/suggest', {'plan_id': plan['id']})]:
             response = await other.request(method, '/api/v1' + path, json=data)
             assert response.status_code == 404, response.text
         assert (await other.get('/api/v1/plans')).json() == []
@@ -337,6 +338,141 @@ def test_plan_acceptance_is_general_across_scenarios(location, equipment, goal, 
     result = validate(data, profile, {'press': {**DOC, 'equipment': doc_equipment}})
     assert result['valid']
     assert 'rep_range' not in codes(result, 'warnings')
+
+
+def _sets(count, reps, weight, rpe=None, completed=True):
+    return [{"reps": reps, "weight_kg": weight, "rpe": rpe, "duration_seconds": None, "completed": completed} for _ in range(count)]
+
+
+def _press(weight=20, sets=3, reps=(8, 12)):
+    return {"exercise_id": "press", "sets": sets, "reps_min": reps[0], "reps_max": reps[1], "duration_seconds": None,
+            "rest_seconds": 60, "rpe": None, "target_weight_kg": weight, "notes": ""}
+
+
+def test_double_progression_load_reps_failure_and_stall():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from app.training.progression import build_performances, counts_for_day, is_stalled, prescribe, progress_plan, rank_replacements
+    top = _sets(3, 12, 20)
+    assert prescribe(_press(), "dumbbell", "muscle_gain", top, [(20, 12)])["after"]["target_weight_kg"] == 22
+    assert prescribe(_press(60, reps=(3, 6)), "barbell", "strength", _sets(3, 6, 60), [])["after"]["target_weight_kg"] == 62.5
+    assert prescribe(_press(16), "kettlebells", "muscle_gain", _sets(3, 12, 16), [])["after"]["target_weight_kg"] == 20
+    heavier = prescribe(_press(), "dumbbell", "muscle_gain", _sets(3, 12, 24), [])
+    assert heavier["action"] == "increase_load" and heavier["after"]["target_weight_kg"] == 26
+    held = prescribe(_press(), "dumbbell", "muscle_gain", _sets(3, 10, 20), [])
+    assert held["action"] == "hold" and held["after"]["target_weight_kg"] == 20
+    assert prescribe(_press(), "dumbbell", "muscle_gain", _sets(2, 12, 20), [])["after"]["target_weight_kg"] == 18
+    assert prescribe(_press(), "dumbbell", "muscle_gain", _sets(3, 12, 16), [])["action"] == "hold"
+    assert prescribe(_press(), "dumbbell", "muscle_gain", _sets(3, 12, 20, rpe=9.5), [])["action"] == "hold"
+    assert prescribe(_press(), "dumbbell", "muscle_gain", _sets(3, 12, None), [])["action"] == "hold"
+    assert prescribe(_press(), "dumbbell", "muscle_gain", [], [(20, 8), (20, 8), (20, 8)])["stalled"] is False
+    missed = _sets(2, 12, 20) + _sets(1, 12, 20, completed=False)
+    assert prescribe(_press(), "dumbbell", "muscle_gain", missed, [])["action"] == "reduce_load"
+    body = _press(None)
+    added = prescribe(body, "body only", "muscle_gain", _sets(3, 12, None), [])
+    assert added["action"] == "add_set" and added["after"]["sets"] == 4 and added["after"]["reps_max"] == 12
+    climbing = _press(None, reps=(6, 10))
+    climbed = prescribe(climbing, "body only", "muscle_gain", _sets(3, 10, None), [])
+    assert climbed["action"] == "increase_reps" and (climbed["after"]["reps_min"], climbed["after"]["reps_max"]) == (7, 11)
+    eased = prescribe(body, "body only", "muscle_gain", _sets(3, 5, None), [])
+    assert eased["action"] == "reduce_reps" and eased["after"]["reps_min"] == 6
+    plateau = prescribe(_press(), "dumbbell", "muscle_gain", _sets(3, 8, 20), [(20, 8), (20, 8), (20, 8)])
+    assert plateau["action"] == "hold" and plateau["stalled"] is True
+    moving = prescribe(_press(), "dumbbell", "muscle_gain", _sets(3, 10, 20), [(20, 8), (20, 8), (20, 10)])
+    assert moving["stalled"] is False
+    forced = prescribe(_press(), "dumbbell", "muscle_gain", top, [(20, 12), (20, 12), (20, 12)])
+    assert forced["action"] == "increase_load" and forced["stalled"] is False and "没有提高" in forced["reason"]
+    capped = _press(None, sets=5)
+    stalled_cap = prescribe(capped, "body only", "muscle_gain", _sets(5, 12, None), [(0, 12), (0, 12), (0, 12)])
+    assert stalled_cap["action"] == "hold" and stalled_cap["stalled"] is True
+    timed = {**_press(None), "exercise_id": "plank", "reps_min": None, "reps_max": None, "duration_seconds": 60}
+    longer = prescribe(timed, "body only", "muscle_gain", [{"duration_seconds": 60, "reps": None, "weight_kg": None, "completed": True}] * 3, [])
+    assert longer["action"] == "increase_duration" and longer["after"]["duration_seconds"] == 65
+    shorter = prescribe(timed, "body only", "muscle_gain", [{"duration_seconds": 40, "reps": None, "weight_kg": None, "completed": True}] * 3, [])
+    assert shorter["action"] == "reduce_duration" and shorter["after"]["duration_seconds"] == 55
+    assert is_stalled([(1,), (1,), (1,)]) and not is_stalled([(1,), (1,)]) and not is_stalled([(1,), (1,), (2,)])
+    fly = {**DOC, "id": "fly", "name": "Dumbbell Fly", "name_zh": "哑铃飞鸟"}
+    assert [item["id"] for item in rank_replacements(DOC, [DOC, fly, {**DOC, "id": "hard", "level": "expert"}, {**DOC, "id": "row", "primary_muscles": ["lats"]}], "beginner")] == ["fly"]
+    plan = PlanDraft.model_validate(draft(days=(0, 2)))
+    tz = ZoneInfo("Asia/Shanghai")
+    start, end = datetime(2026, 11, 15, 16), datetime(2026, 11, 22, 16)
+    assert counts_for_day(datetime(2026, 11, 16, 11), None, "mon", 0, date(2026, 11, 16), start, end, tz)
+    assert not counts_for_day(datetime(2026, 11, 17, 11), None, "mon", 0, date(2026, 11, 16), start, end, tz)
+    rows = [{"exercise_id": "press", "plan_day_id": None, "performed_at": datetime(2026, 11, 16, 11), "log_id": "free",
+             "reps": 12, "weight_kg": 20, "duration_seconds": None, "rpe": None, "completed": True}] * 3
+    rows += [{"exercise_id": "press", "plan_day_id": "wed", "performed_at": datetime(2026, 11, 16, 12), "log_id": "linked",
+              "reps": 8, "weight_kg": 20, "duration_seconds": None, "rpe": None, "completed": True}]
+    performances = build_performances(plan, {0: "mon", 2: "wed"}, rows, start, end, tz)
+    assert len(performances[(0, 0)]["completed"]) == 3 and len(performances[(2, 0)]["completed"]) == 1
+    tight = PlanDraft.model_validate({"name": "短课", "goal": "muscle_gain", "week_start": "2026-11-16", "days": [
+        {"weekday": 0, "focus": "核心", "exercises": [{"exercise_id": "plank", "sets": 3, "reps_min": 12, "reps_max": 12}]}]})
+    plank = {**DOC, "id": "plank", "name": "Plank", "name_zh": "平板支撑", "equipment": "body only", "primary_muscles": ["abdominals"]}
+    adjusted = progress_plan(tight, {(0, 0): {"completed": _sets(3, 12, None), "history": []}}, {"plank": plank},
+                             {**PROFILE, "session_minutes": 15}, {}, False, date(2026, 11, 23))
+    assert adjusted["validation"]["valid"] and adjusted["draft"]["days"][0]["exercises"][0]["sets"] == 3
+    assert adjusted["decisions"][0]["action"] == "hold" and "duration" in adjusted["decisions"][0]["reason"]
+
+
+async def test_suggest_next_week_progresses_without_saving_until_confirmed(training):
+    from app.agent.tools.plan_tools import SuggestNextWeekTool
+    from app.agent.tools.registry import build_default_tools
+    from app.training.schema import SuggestRequest
+    uid, bob, ids = training
+    assert "suggest_next_week" in {tool.name for tool in build_default_tools()}
+    async with await client_for(uid) as client:
+        data = draft(ids[0], days=(0,))
+        data["days"][0]["exercises"][0]["target_weight_kg"] = 20
+        plan = (await client.post("/api/v1/plans", json=data)).json()
+        await client.post(f"/api/v1/plans/{plan['id']}/activate")
+        assert (await client.post("/api/v1/plans/suggest", json={})).status_code == 200
+        assert (await client.post("/api/v1/plans/suggest", json={"plan_id": plan["id"], "week_start": "2026-11-18"})).status_code == 422
+        assert (await client.post("/api/v1/plans/suggest", json={"plan_id": plan["id"], "week_start": "2026-11-16"})).status_code == 422
+        body = {"idempotency_key": new_id(), "plan_day_id": plan["days"][0]["id"], "performed_at": "2026-11-16T19:00:00+08:00",
+                "duration_min": 30, "sets": [{"exercise_id": ids[0], "set_no": i, "reps": 12, "weight_kg": 20} for i in (1, 2, 3)]}
+        assert (await client.post("/api/v1/logs", json=body)).status_code == 201
+        suggested = await client.post("/api/v1/plans/suggest", json={"plan_id": plan["id"]})
+        assert suggested.status_code == 200, suggested.text
+        payload = suggested.json()
+        assert payload["saved"] is False and payload["week_start"] == "2026-11-23"
+        assert payload["decisions"][0]["action"] == "increase_load"
+        assert payload["draft"]["days"][0]["exercises"][0]["target_weight_kg"] == 22
+        assert len((await client.get("/api/v1/plans")).json()) == 1
+        saved = await client.post("/api/v1/plans", json=payload["draft"])
+        assert saved.status_code == 201, saved.text
+        again = await client.post("/api/v1/plans", json=payload["draft"])
+        assert again.json()["id"] == saved.json()["id"]
+        assert len((await client.get("/api/v1/plans")).json()) == 2
+        tool_result = await SuggestNextWeekTool().run(SuggestRequest(plan_id=plan["id"]), ToolContext(uid, "suggest"))
+        assert tool_result["saved"] is False and tool_result["decisions"][0]["after"]["target_weight_kg"] == 22
+    async with await client_for(bob) as other:
+        assert (await other.post("/api/v1/plans/suggest", json={})).status_code == 404
+
+
+async def test_stalled_exercise_offers_replacement_without_auto_swap(training):
+    uid, _, ids = training
+    fly = ids[0] + "fly"
+    async with SessionLocal() as dbs:
+        dbs.add(Exercise(id=fly, name="A Dumbbell Fly", name_zh="哑铃飞鸟", equipment="dumbbell", level="beginner",
+                         category="strength", primary_muscles=["chest"], secondary_muscles=[], instructions=["test"]))
+        await dbs.commit()
+    async with await client_for(uid) as client:
+        data = draft(ids[0], days=(0,))
+        data["days"][0]["exercises"][0]["target_weight_kg"] = 20
+        plan = (await client.post("/api/v1/plans", json=data)).json()
+        for hour in (19, 20, 21):
+            body = {"idempotency_key": new_id(), "plan_day_id": plan["days"][0]["id"], "performed_at": f"2026-11-16T{hour}:00:00+08:00",
+                    "duration_min": 30, "sets": [{"exercise_id": ids[0], "set_no": i, "reps": 8, "weight_kg": 20} for i in (1, 2, 3)]}
+            assert (await client.post("/api/v1/logs", json=body)).status_code == 201, body
+        suggested = (await client.post("/api/v1/plans/suggest", json={"plan_id": plan["id"]})).json()
+        decision = suggested["decisions"][0]
+        assert decision["action"] == "hold" and decision["stalled"] is True
+        assert decision["replacement_candidates"][0]["id"] == fly
+        assert suggested["draft"]["days"][0]["exercises"][0]["exercise_id"] == ids[0]
+        replaced = (await client.post("/api/v1/plans/suggest", json={"plan_id": plan["id"], "replace_stalled": True})).json()
+        assert replaced["decisions"][0]["action"] == "replace"
+        assert replaced["draft"]["days"][0]["exercises"][0]["exercise_id"] == fly
+        assert replaced["validation"]["valid"] is True
+        assert len((await client.get("/api/v1/plans")).json()) == 1
 
 
 async def test_agent_record_and_stats_tools_use_real_storage_and_idempotency(training):

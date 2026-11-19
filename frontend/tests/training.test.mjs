@@ -25,20 +25,24 @@ const { default: React, act } = await import('react');
 const { createRoot } = await import('react-dom/client');
 const { TrainingWorkspace } = await import('../src/TrainingWorkspace.tsx');
 const { TrainingLocationFields } = await import('../src/TrainingLocationFields.tsx');
-const { monday } = await import('../src/trainingTypes.ts');
+const { monday, dayDate } = await import('../src/trainingTypes.ts');
 const h = React.createElement, root = createRoot(document.getElementById('root'));
 const week = monday();
 const exercise = { id: 'press', name: 'Dumbbell Press', name_zh: '哑铃卧推', equipment: 'dumbbell', primary_muscles: ['chest'], category: 'strength' };
 const plan = { id: 'p1', name: '新手三日计划', week_start: week, status: 'draft', version: 1, goal: 'muscle_gain', validation: { warnings: [{ message: '请注意动作控制' }], estimated_minutes: { 0: 30 } }, days: [{ id: 'd1', weekday: 0, focus: '胸部训练', warmup_minutes: 5, cooldown_minutes: 5, notes: '', exercises: [{ id: 'pe1', exercise_id: 'press', position: 0, sets: 1, reps_min: 8, reps_max: 12, duration_seconds: null, rest_seconds: 60, rpe: null, target_weight_kg: 20, notes: '', exercise }] }] };
 const stats = { week_start: week, plan_id: 'p1', planned_days: 1, completed_days: 1, completion_rate: 1, workouts: 1, completed_sets: 3, duration_min: 30, volume_kg_reps: 480, daily: Array.from({ length: 7 }, (_, i) => ({ date: `day${i}`, volume_kg_reps: i === 0 ? 480 : 0, duration_min: i === 0 ? 30 : 0, sets: i === 0 ? 3 : 0 })), muscles: [{ muscle: '胸部', planned_sets: 3, actual_sets: 3 }], prs: [{ exercise_id: 'press', name: '哑铃卧推', estimated_1rm_kg: 25.33, previous_best_kg: null, is_pr: true }], notes: ['只使用真实训练记录'] };
-let calls = [], active = false;
+let calls = [], active = false, nextPlan = null;
+const nextWeek = dayDate(week, 7);
+const suggestion = { source_plan_id: 'p1', source_week: week, week_start: nextWeek, saved: false, draft: { name: plan.name, goal: plan.goal, split_type: 'full_body', week_start: nextWeek, target_muscles: [], days: [{ weekday: 0, focus: '胸部训练', notes: '', warmup_minutes: 5, cooldown_minutes: 5, exercises: [{ exercise_id: 'press', sets: 3, reps_min: 8, reps_max: 12, duration_seconds: null, rest_seconds: 60, rpe: null, target_weight_kg: 22, notes: '' }] }] }, decisions: [{ weekday: 0, position: 0, exercise_id: 'press', from_exercise_id: 'press', name: '哑铃卧推', action: 'increase_load', reason: '下次目标 22 kg', stalled: false, before: { sets: 3, reps_min: 8, reps_max: 12, duration_seconds: null, target_weight_kg: 20 }, after: { sets: 3, reps_min: 8, reps_max: 12, duration_seconds: null, target_weight_kg: 22 }, replacement_candidates: [] }], validation: { valid: true, errors: [], warnings: [] }, rules: ['双进阶：达到次数上限后才增加负重。', '这里只生成草稿，不会保存或激活。'] };
 const props = { token: 'test', completedTurns: 0, login: () => {}, ask: () => {}, detail: () => {} };
 function mockFetch() {
-  calls = []; active = false;
+  calls = []; active = false; nextPlan = null;
   globalThis.fetch = async (url, options = {}) => {
     calls.push({ url, options });
     if (url.endsWith('/activate')) { active = true; return new Response('{}'); }
-    if (url === '/api/v1/plans') return new Response(JSON.stringify([{ ...plan, status: active ? 'active' : 'draft' }]));
+    if (url === '/api/v1/plans/suggest') return new Response(JSON.stringify(suggestion));
+    if (url === '/api/v1/plans' && options.method === 'POST') { nextPlan = { ...plan, id: 'p2', week_start: nextWeek, status: 'draft' }; return new Response(JSON.stringify(nextPlan), { status: 201 }); }
+    if (url === '/api/v1/plans') return new Response(JSON.stringify(nextPlan ? [nextPlan, { ...plan, status: active ? 'active' : 'draft' }] : [{ ...plan, status: active ? 'active' : 'draft' }]));
     if (url === '/api/v1/logs') return new Response(JSON.stringify([]));
     if (url.startsWith('/api/v1/stats/weekly')) return new Response(JSON.stringify(stats));
     if (url === '/api/v1/knowledge/search') return new Response(JSON.stringify({ hits: [exercise] }));
@@ -114,6 +118,22 @@ test('statistics show completion, accessible capacity chart, sets and PR', async
   assert.match(document.querySelector('[role=img]').getAttribute('aria-label'), /480/);
   assert.match(document.body.textContent, /25.33 kg/);
   assert.match(document.body.textContent, /胸部/);
+});
+
+test('next week suggestion stays a draft until the user saves it', async () => {
+  await render(null); mockFetch();
+  await render(h(TrainingWorkspace, { ...props, page: 'plans' }));
+  await click(button('根据记录安排下一周'));
+  const suggested = calls.find(c => c.url === '/api/v1/plans/suggest');
+  assert.equal(JSON.parse(suggested.options.body).plan_id, 'p1');
+  assert.match(document.body.textContent, /下次目标 22 kg/);
+  assert.equal(calls.filter(c => c.url === '/api/v1/plans' && c.options.method === 'POST').length, 0);
+  await click(button('保存为待确认草稿'));
+  const saved = calls.find(c => c.url === '/api/v1/plans' && c.options.method === 'POST');
+  assert.equal(JSON.parse(saved.options.body).week_start, nextWeek);
+  assert.equal(JSON.parse(saved.options.body).days[0].exercises[0].target_weight_kg, 22);
+  assert.match(document.body.textContent, /下一周草稿已保存/);
+  assert.equal(calls.filter(c => c.url.endsWith('/activate')).length, 0);
 });
 
 test('private training pages do not make requests before login', async () => {

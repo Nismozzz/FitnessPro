@@ -10,3 +10,6 @@ export const equipmentLabels: Record<string, string> = { 'body only': '徒手', 
 export function monday(date = new Date()) { const day = new Date(date); day.setDate(day.getDate() - (day.getDay() + 6) % 7); return localDate(day); }
 export function localDate(date: Date) { return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`; }
 export function dayDate(week: string, weekday: number) { const date = new Date(`${week}T12:00:00`); date.setDate(date.getDate() + weekday); return localDate(date); }
+export type Dose = { sets: number; reps_min: number | null; reps_max: number | null; duration_seconds: number | null; target_weight_kg: number | null };
+export type ProgressionDecision = { weekday: number; position: number; exercise_id: string; from_exercise_id: string; name: string; action: string; reason: string; stalled: boolean; before: Dose; after: Dose; replacement_candidates: { id: string; name: string; name_zh?: string | null }[] };
+export type NextWeekSuggestion = { source_plan_id: string; source_week: string; week_start: string; saved: boolean; draft: unknown; decisions: ProgressionDecision[]; validation: { valid: boolean; errors: { message: string }[]; warnings: { message: string }[] }; rules: string[] };

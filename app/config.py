@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import os
 import secrets
+import sys
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -17,16 +18,38 @@ import yaml
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+def bundle_root() -> Path:
+    """只读资源目录：开发时是项目根，安装包里是随程序打包的目录。"""
+    if getattr(sys, "frozen", False):
+        return Path(getattr(sys, "_MEIPASS", Path(sys.executable).resolve().parent))
+    return Path(__file__).resolve().parents[1]
+
+
+def writable_root() -> Path:
+    """数据库、密钥和日志。安装版写到本机用户目录，避免装到 Program Files 后无法保存。"""
+    if getattr(sys, "frozen", False):
+        root = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "FitnessPro"
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+    return bundle_root()
+
+
+PROJECT_ROOT = bundle_root()
+load_dotenv(writable_root() / ".env")
 load_dotenv(PROJECT_ROOT / ".env")
 
 logger = logging.getLogger(__name__)
 
 
 def resolve_path(path: str | Path) -> Path:
-    """相对路径以项目根目录为基准。"""
+    """相对路径以项目根目录为基准。安装版里 data/ 改写到用户目录。"""
     p = Path(path)
-    return p if p.is_absolute() else PROJECT_ROOT / p
+    if p.is_absolute():
+        return p
+    text = p.as_posix()
+    base = writable_root() if text == "data" or text.startswith("data/") else bundle_root()
+    return base / p
 
 
 class LLMProfile(BaseModel):
@@ -162,7 +185,7 @@ def _normalize_db_url(url: str) -> str:
     if url.startswith(prefix):
         path = url[len(prefix):]
         if path and path != ":memory:" and not Path(path).is_absolute():
-            return prefix + str(PROJECT_ROOT / path)
+            return prefix + str(resolve_path(path))
     return url
 
 
@@ -181,3 +204,13 @@ def get_settings() -> Settings:
 
 
 settings = get_settings()
+
+
+def load_runtime_overrides() -> None:
+    # 延后导入，避免和配置模块循环依赖。界面保存的密钥在此时覆盖环境变量。
+    from app.runtime_config import apply_stored_settings
+
+    apply_stored_settings()
+
+
+load_runtime_overrides()

@@ -256,6 +256,40 @@ async def init_retriever() -> None:
         logger.warning("知识库未就绪：%s", exc)
 
 
+async def refresh_provider_clients() -> list[str]:
+    """设置页保存后更换 Embedding 与重排客户端，不重新读取整份动作库。"""
+    warnings: list[str] = []
+    retriever = _retriever
+    if retriever is None:
+        return warnings
+    store = LocalVectorStore.load(resolve_path(settings.data.index_dir))
+    embedder: Embedder | None = None
+    if store is None:
+        warnings.append("未找到向量索引，动作检索只使用关键词。")
+    elif store.meta.get("embedding_model") != settings.embedding.model:
+        warnings.append("Embedding 模型与已有索引不一致，向量检索已暂停。请重新运行入库脚本。")
+        store = None
+    else:
+        try:
+            embedder = create_embedder(settings.embedding)
+        except Exception as exc:
+            logger.warning("Embedding 初始化失败：%s", exc)
+            warnings.append("Embedding 未就绪，动作检索只使用关键词。")
+            store = None
+    reranker = None
+    if settings.reranker.enabled:
+        try:
+            reranker = Reranker(settings.reranker)
+        except Exception as exc:
+            logger.warning("Reranker 初始化失败：%s", exc)
+            warnings.append("重排未就绪，检索结果不再重排。")
+    retriever.vector_store = store if embedder is not None else None
+    retriever.embedder = embedder
+    retriever.reranker = reranker
+    retriever._query_cache.clear()
+    return warnings
+
+
 def get_retriever() -> ExerciseRetriever:
     if _retriever is None:
         raise KnowledgeBaseNotReady(

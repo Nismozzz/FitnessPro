@@ -131,9 +131,9 @@ docker compose up -d backend frontend
 
 ### 配置与启动
 
-`llm.vision` 是独立的 OpenAI Chat Completions 兼容视觉接口，必须支持 `image_url`（Base64 data URL）及 JSON 输出。不能直接复用不支持图片的文本模型。当前启用 SiliconFlow `Qwen/Qwen3-VL-32B-Instruct`，已通过模型列表核实可用；权限及价格以供应商为准，可替换为其他兼容视觉模型。
+`llm.vision` 是独立的 OpenAI Chat Completions 兼容视觉接口，必须支持 `image_url`（Base64 data URL）及 JSON 输出。不能直接复用不支持图片的文本模型。当前启用 DeepSeek `deepseek-flash`；权限及价格以供应商为准，可替换为其他兼容视觉模型。
 
-1. 默认复用 `.env` 的 `EMBEDDING_API_KEY`；如需独立 Key，将 `llm.vision.api_key_env` 改为 `VISION_LLM_API_KEY` 并设置对应环境变量（不要提交到 Git）。
+1. 默认复用 `.env` 的 `FAST_LLM_API_KEY`；如需独立 Key，将 `llm.vision.api_key_env` 改为 `VISION_LLM_API_KEY` 并设置对应环境变量（不要提交到 Git）。
 2. 核对 `config.yml` 中 `llm.vision.model` / `base_url` 和 `vision.enabled: true`。
 3. 构建并更新前后端（不需要重新入库、不改数据库结构）：
 
@@ -153,7 +153,7 @@ docker compose up -d --no-deps backend frontend
 - 图片读取和删除均需用户鉴权，不能凭 URL 跨用户读取，无公开静态目录。前端用鉴权请求读取 Blob，URL 不携带 JWT。
 - 每次发送最多一张；对话记录只保存图片 ID 和文字识别结果，不保存 Base64。刷新后可回看照片；删除照片后无法再次查看/识别，但既有文字分析仍在，删除会话会删除会话内图片及消息。
 - 未发送照片可在预览中删除，切换会话/新建对话/主动退出时会尝试清理草稿照片。浏览器异常退出、上传后刷新或网络中断可能留下未引用文件；当前不自动过期清理，需管理员按实际保留政策管理该目录。
-- 上传区明确提示图片会发送到哪个视觉供应商。此功能只收器械照片，不用于体态、疾病或身份判断。
+- 上传入口为输入行左侧图标；输入区显示 88px 缩略图及右上角删除按钮，不显示独立隐私提示。照片会发送至配置的模型供应商，此功能只收器械照片，不用于体态、疾病或身份判断。
 - Nginx 上传上限已调整为 9 MiB；提高后端 `max_upload_bytes` 时需同步检查该限制。
 
 ### 验收
@@ -166,3 +166,7 @@ docker compose up -d --no-deps backend frontend
 - 复用现有 SiliconFlow Key，模型列表确认 `Qwen/Qwen3-VL-32B-Instruct` 可用；公开哑铃卧推示意图真实调用返回哑铃相关候选和确认要求，本地约 8.3 秒、Docker 内约 7.5 秒。这只是接口烟雾测试，不代表真实健身房照片准确率。
 - 已更新当前 Docker 前后端；通过 Nginx 上传约 3 MiB PNG，验证重新编码 JPEG、私有鉴权读取、无缓存、卷内落盘和删除成功，临时账号与图片已清理。
 - 图片识别轮次在执行器层禁止写操作，并跳过后台个人记忆提取，避免将视觉推测写入档案或记忆。
+
+### 视觉模型与输入区更新（2026-11-19）
+
+视觉请求已切换为 DeepSeek `deepseek-flash`，复用 `FAST_LLM_API_KEY`，关闭思考模式。公开哑铃卧推示意图真实接口测试约 2.5 秒返回候选；单次结果不代表稳定延迟。输入区照片改为固定 88px 缩略图、cover 裁切、10px 圆角及右上角圆形 ×，上传入口为输入行左侧图标，移除独立隐私文字；文字输入行保持固定高度。

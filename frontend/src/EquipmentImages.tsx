@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { ImagePlus, Trash2 } from 'lucide-react';
+import { ImagePlus, X } from 'lucide-react';
 import { request, TOKEN_KEY } from './api';
 
 export function splitImageMessage(content: string) {
@@ -7,7 +7,7 @@ export function splitImageMessage(content: string) {
   return { text: content.replace(/\n?\[图片附件：[a-f0-9]{32}\]/g, ''), ids };
 }
 
-export function EquipmentPhoto({ id, disabled, removed, fail }: { id: string; disabled: boolean; removed?: () => void; fail: (e: unknown) => void }) {
+export function EquipmentPhoto({ id, disabled, removed, fail, thumbnail = false }: { id: string; disabled: boolean; thumbnail?: boolean; removed?: () => void; fail: (e: unknown) => void }) {
   const [src, setSrc] = useState('');
   const [missing, setMissing] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -26,7 +26,7 @@ export function EquipmentPhoto({ id, disabled, removed, fail }: { id: string; di
     try { await request(`/images/${id}`, { method: 'DELETE' }); setMissing(true); removed?.(); }
     catch (e) { fail(e); } finally { setDeleting(false); }
   }
-  return <div className="equipment-photo">{missing ? <span>图片已删除或无法读取</span> : <>{src ? <img src={src} alt="上传的健身器械"/> : <span>正在读取图片…</span>}<button type="button" disabled={disabled || deleting} onClick={() => void remove()} aria-label="删除器械照片"><Trash2 size={15}/>{deleting ? '删除中' : '删除照片'}</button></>}</div>;
+  return <div className={`equipment-photo${thumbnail ? ' equipment-thumbnail' : ''}`}>{missing ? <span>图片已删除或无法读取</span> : <>{src ? <img src={src} alt="上传的健身器械"/> : <span>正在读取图片…</span>}<button type="button" disabled={disabled || deleting} onClick={() => void remove()} aria-label="删除器械照片" title={deleting ? '删除中…' : '删除照片'}><X size={14}/></button></>}</div>;
 }
 
 type ImageConfig = { available: boolean; max_upload_bytes: number; provider: string | null; notice: string };
@@ -48,12 +48,11 @@ export function EquipmentImagePicker({ token, ids, onChange, disabled, uploading
     try { const value = await request<{ id: string }>('/images', { method: 'POST', headers: { 'Content-Type': file.type }, body: file }); onChange([value.id]); }
     catch (e) { fail(e); } finally { uploading(false); }
   }
+  const hint = !token ? '登录后可上传' : configError ? '图片配置加载失败，点击重试' : !config ? '正在加载图片配置' : !config.available ? '请先配置并启用视觉模型' : ids.length ? '每次最多上传一张图片' : '上传器械照片';
   return <div className="equipment-upload">
-    {ids.map(id => <EquipmentPhoto key={id} id={id} disabled={disabled} removed={() => onChange(ids.filter(value => value !== id))} fail={fail}/>)}
-    <div><input hidden ref={input} type="file" accept="image/jpeg,image/png,image/webp" aria-label="选择器械照片" onChange={e => { void upload(e.target.files?.[0]); e.target.value = ''; }}/>
-      <button type="button" className="text-button" disabled={disabled || !config?.available || ids.length >= 1} onClick={() => input.current?.click()}><ImagePlus size={17}/> 上传器械照片</button>
-      {!token ? <small>登录后可上传</small> : configError ? <button type="button" className="text-button" disabled={disabled} onClick={() => setRetry(n => n + 1)}>图片配置加载失败，重试</button> : config && !config.available ? <small>请先配置并启用视觉模型</small> : null}
+    {ids.length > 0 && <div className="equipment-previews">{ids.map(id => <EquipmentPhoto key={id} id={id} thumbnail disabled={disabled} removed={() => onChange(ids.filter(value => value !== id))} fail={fail}/>)}</div>}
+    <div className="equipment-upload-action"><input hidden ref={input} type="file" accept="image/jpeg,image/png,image/webp" aria-label="选择器械照片" onChange={e => { void upload(e.target.files?.[0]); e.target.value = ''; }}/>
+      <button type="button" className="equipment-upload-button" aria-label={configError ? '重试加载图片配置' : '上传器械照片'} title={hint} disabled={disabled || (!configError && (!config?.available || ids.length >= 1))} onClick={() => configError ? setRetry(n => n + 1) : input.current?.click()}><ImagePlus size={20}/></button>
     </div>
-    {config?.available && <small>{config.notice} 服务：{config.provider}。每次 1 张，最大 {Math.round(config.max_upload_bytes / 1024 / 1024)} MiB。识别后先确认器械，再推荐动作。</small>}
   </div>;
 }

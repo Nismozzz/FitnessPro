@@ -257,4 +257,4 @@ token 为估算值；表结构使用 Alembic 版本化迁移，旧的无版本�
 
 ### 器械拍照识别
 
-`LLM_VISION` 支持在聊天中上传器械照片，识别候选并由用户确认，再从现有动作知识库推荐动作。独立配置 `llm.vision`，当前启用 SiliconFlow `Qwen/Qwen3-VL-32B-Instruct` 并复用 `.env` 的 `EMBEDDING_API_KEY`，可用 `vision.enabled` 关闭。支持鉴权图片回看、删除、自动缩图和去除 EXIF，照片复用 Docker `app_data` 卷。配置、部署与隐私说明见 [部署文档](deploy/README.md#器械图片识别llm_vision)。
+`LLM_VISION` 支持在聊天中上传器械照片，识别候选并由用户确认，再从现有动作知识库推荐动作。独立配置 `llm.vision`，当前启用 DeepSeek `deepseek-flash` 并复用 `.env` 的 `FAST_LLM_API_KEY`，可用 `vision.enabled` 关闭。支持鉴权图片回看、删除、自动缩图和去除 EXIF，照片复用 Docker `app_data` 卷。配置、部署与隐私说明见 [部署文档](deploy/README.md#器械图片识别llm_vision)。

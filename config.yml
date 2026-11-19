@@ -45,14 +45,17 @@ llm:
       reasoning_effort: low
 
   vision:
-    model: "Qwen/Qwen3-VL-32B-Instruct"
-    base_url: "https://api.siliconflow.cn/v1"
-    api_key_env: "EMBEDDING_API_KEY"  # 同属 SiliconFlow，复用现有 Key
+    model: "deepseek-flash"
+    base_url: "https://api.deepseek.com"
+    api_key_env: "FAST_LLM_API_KEY"  # 复用 fast 模型 Key
     temperature: 0.1
     max_tokens: 2048
     timeout: 120
+    extra_body:
+      thinking:
+        type: disabled
 
-# 图片识别使用独立视觉模型，复用现有 SiliconFlow Embedding Key。
+# 图片识别使用 DeepSeek Flash，复用 fast 模型 Key。
 # 如需独立 Key，将 llm.vision.api_key_env 改为 VISION_LLM_API_KEY。
 vision:
   enabled: true

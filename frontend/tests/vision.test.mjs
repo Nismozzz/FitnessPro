@@ -65,23 +65,26 @@ test('picker handles configuration, validation, authenticated upload and removal
   };
   URL.createObjectURL = () => 'blob:private-photo'; URL.revokeObjectURL = () => {};
   await render(React.createElement(Harness));
-  assert.match(document.body.textContent, /vision.test/);
+  assert.equal(document.querySelector('[aria-label="上传器械照片"]').title, '上传器械照片');
+  assert.ok(!document.body.textContent.includes('图片会发送'));
   await select(new File(['bad'], 'x.svg', { type: 'image/svg+xml' }));
   await select(new File(['x'.repeat(1025)], 'x.png', { type: 'image/png' }));
   assert.equal(uploads, 0); assert.equal(errors.length, 2);
   await select(new File(['image'], 'x.png', { type: 'image/png' }));
   assert.equal(uploads, 1); assert.deepEqual(currentIds, [id]); assert.deepEqual(states, [true, false]);
   assert.equal(document.querySelector('img').src, 'blob:private-photo');
-  assert.ok([...document.querySelectorAll('button')].find(b => b.textContent.includes('上传')).disabled);
+  assert.ok(document.querySelector('.equipment-thumbnail'));
+  assert.equal(document.querySelector('[aria-label="删除器械照片"]').textContent, '');
+  assert.ok([...document.querySelectorAll('button')].find(b => b.getAttribute('aria-label') === '上传器械照片').disabled);
   window.confirm = () => true;
   await act(async () => document.querySelector('[aria-label="删除器械照片"]').click());
   assert.equal(deletes, 1); assert.deepEqual(currentIds, []);
   await render(React.createElement(Harness, { key: 'guest', token: null }));
-  assert.match(document.body.textContent, /登录后可上传/);
+  assert.equal(document.querySelector('[aria-label="上传器械照片"]').title, '登录后可上传');
   assert.ok(document.querySelector('button').disabled);
   globalThis.fetch = async () => config(false);
   await render(React.createElement(Harness, { key: 'disabled' }));
-  assert.match(document.body.textContent, /请先配置并启用视觉模型/);
+  assert.equal(document.querySelector('[aria-label="上传器械照片"]').title, '请先配置并启用视觉模型');
 });
 
 test('private photo handles deleted images and chat sends only image IDs', async () => {

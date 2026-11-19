@@ -2,17 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import timezone
 from typing import Any
-from zoneinfo import ZoneInfo
 
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 
-from app.config import settings
 from app.database.models import Exercise, PlanDay, PlanExercise, User, WorkoutLog, WorkoutPlan, WorkoutSet, new_id
 from app.database.session import SessionLocal
 from app.memory.service import memory_service
-from app.training.progression import RULES, build_performances, progress_plan, rank_replacements
 from app.training.schema import LogCreate, PlanDraft, Replacement
 from app.training.validator import validate_plan
 from app.users.profile import get_profile
@@ -54,56 +51,6 @@ async def validation_inputs(user_id: str, plan: PlanDraft):
     return profile, docs
 
 
-async def suggest_next_week(user_id: str, plan_id: str | None = None, week_start: date | None = None, replace_stalled: bool = False) -> dict:
-    tz = ZoneInfo(settings.timezone)
-    async with SessionLocal() as db:
-        if plan_id:
-            row = await owned_plan(db, user_id, plan_id)
-        else:
-            row = await db.scalar(select(WorkoutPlan).where(WorkoutPlan.user_id == user_id, WorkoutPlan.status == "active"))
-            if row is None:
-                raise TrainingError("没有使用中的计划，请先在计划页确认一份计划", 404)
-        source = PlanDraft.model_validate(row.draft)
-        source_id = row.id
-        target = week_start or (source.week_start + timedelta(days=7))
-        if target.weekday() != 0:
-            raise TrainingError("week_start 必须为周一", 422)
-        if target <= source.week_start:
-            raise TrainingError("下一周必须晚于来源计划周", 422)
-        serialized = await serialize_plan(db, row)
-        start = datetime.combine(source.week_start, time.min, tzinfo=tz).astimezone(timezone.utc).replace(tzinfo=None)
-        end = datetime.combine(source.week_start + timedelta(days=7), time.min, tzinfo=tz).astimezone(timezone.utc).replace(tzinfo=None)
-        day_ids = {day["weekday"]: day["id"] for day in serialized["days"]}
-        docs = {exercise["exercise_id"]: exercise["exercise"] for day in serialized["days"] for exercise in day["exercises"]}
-        exercise_ids = set(docs)
-        set_rows = []
-        if exercise_ids:
-            query = await db.execute(
-                select(WorkoutSet, WorkoutLog.performed_at, WorkoutLog.plan_day_id, WorkoutLog.id)
-                .join(WorkoutLog, WorkoutSet.log_id == WorkoutLog.id)
-                .where(WorkoutLog.user_id == user_id, WorkoutLog.performed_at < end,
-                       WorkoutSet.exercise_id.in_(exercise_ids))
-            )
-            for entry, performed_at, logged_day, log_id in query.all():
-                set_rows.append({
-                    "exercise_id": entry.exercise_id, "plan_day_id": logged_day, "performed_at": performed_at,
-                    "log_id": log_id, "reps": entry.reps, "duration_seconds": entry.duration_seconds,
-                    "weight_kg": entry.weight_kg, "rpe": entry.rpe, "completed": entry.completed,
-                })
-        equipments = {doc.get("equipment") for doc in docs.values() if doc.get("equipment")}
-        pool = []
-        if equipments:
-            pool = [snapshot(exercise) for exercise in (await db.scalars(select(Exercise).where(Exercise.equipment.in_(equipments)))).all()]
-            for item in pool:
-                docs.setdefault(item["id"], item)
-    profile = await profile_for_plan(user_id)
-    level = profile.get("experience_level") or "beginner"
-    candidates = {eid: rank_replacements(docs[eid], pool, level) for eid in exercise_ids if eid in docs}
-    result = progress_plan(source, build_performances(source, day_ids, set_rows, start, end, tz), docs, profile, candidates, replace_stalled, target)
-    return {"source_plan_id": source_id, "source_week": source.week_start.isoformat(), "week_start": target.isoformat(),
-            "saved": False, **result, "rules": RULES}
-
-
 async def check_plan(user_id: str, plan: PlanDraft) -> dict:
     profile, docs = await validation_inputs(user_id, plan)
     return validate_plan(plan, profile, docs)
@@ -142,7 +89,7 @@ async def serialize_plan(db, row: WorkoutPlan) -> dict:
     return data
 
 
-async def save_plan(user_id: str, plan: PlanDraft, parent_id: str | None = None) -> dict:
+async def save_plan(user_id: str, plan: PlanDraft, parent_id: str | None = None, require_active_parent: bool = False, *, expected_history: dict | None = None) -> dict:
     profile, docs = await validation_inputs(user_id, plan)
     validation = validate_plan(plan, profile, docs)
     if not validation["valid"]:
@@ -151,7 +98,20 @@ async def save_plan(user_id: str, plan: PlanDraft, parent_id: str | None = None)
     content_hash = digest(data)
     async with SessionLocal() as db:
         await lock_user(db, user_id)
+        # Recheck evidence under the same user lock/transaction as draft creation.
+        # Logging and deletion acquire this lock too, so evidence cannot change
+        # between this check and commit (SQLite and PostgreSQL).
+        if expected_history is not None:
+            records = (await db.execute(select(WorkoutLog.id, WorkoutLog.content_hash, WorkoutLog.plan_day_id)
+                       .where(WorkoutLog.user_id == user_id,
+                              WorkoutLog.performed_at >= expected_history["start"],
+                              WorkoutLog.performed_at < expected_history["end"])
+                       .order_by(WorkoutLog.performed_at, WorkoutLog.id))).all()
+            if [tuple(row) for row in records] != expected_history["records"]:
+                raise TrainingError("训练记录已变化，请重新查看并确认下周建议", 409)
         parent = await owned_plan(db, user_id, parent_id) if parent_id else None
+        if require_active_parent and (parent is None or parent.status != "active"):
+            raise TrainingError("当前计划已变化，请重新生成建议", 409)
         existing = await db.scalar(select(WorkoutPlan).where(WorkoutPlan.user_id == user_id, WorkoutPlan.content_hash == content_hash))
         if existing:
             return await serialize_plan(db, existing)
@@ -184,6 +144,19 @@ async def list_plans(user_id: str) -> list[dict]:
 async def get_plan(user_id: str, plan_id: str) -> dict:
     async with SessionLocal() as db:
         return await serialize_plan(db, await owned_plan(db, user_id, plan_id))
+
+
+async def delete_plan(user_id: str, plan_id: str) -> None:
+    async with SessionLocal() as db:
+        await lock_user(db, user_id)
+        await owned_plan(db, user_id, plan_id)
+        days = select(PlanDay.id).where(PlanDay.plan_id == plan_id)
+        # Keep actual training history, even when its source plan is removed.
+        await db.execute(update(WorkoutLog).where(WorkoutLog.plan_day_id.in_(days)).values(plan_day_id=None))
+        await db.execute(delete(PlanExercise).where(PlanExercise.plan_day_id.in_(days)))
+        await db.execute(delete(PlanDay).where(PlanDay.plan_id == plan_id))
+        await db.execute(delete(WorkoutPlan).where(WorkoutPlan.id == plan_id, WorkoutPlan.user_id == user_id))
+        await db.commit()
 
 
 async def active_plan(user_id: str) -> dict | None:
@@ -279,3 +252,14 @@ async def get_log(user_id: str, log_id: str) -> dict:
         if row is None:
             raise TrainingError("训练记录不存在", 404)
         return await serialize_log(db, row)
+
+
+async def delete_log(user_id: str, log_id: str) -> None:
+    async with SessionLocal() as db:
+        await lock_user(db, user_id)
+        row = await db.scalar(select(WorkoutLog).where(WorkoutLog.id == log_id, WorkoutLog.user_id == user_id))
+        if row is None:
+            raise TrainingError("训练记录不存在", 404)
+        await db.execute(delete(WorkoutSet).where(WorkoutSet.log_id == log_id))
+        await db.delete(row)
+        await db.commit()

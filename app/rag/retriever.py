@@ -11,7 +11,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 from collections import OrderedDict, defaultdict
 from dataclasses import dataclass, field
 
@@ -23,6 +25,7 @@ from app.rag.embeddings import Embedder, create_embedder
 from app.rag.reranker import Reranker
 from app.rag.schema import LEVEL_ORDER, ExerciseDoc, ExerciseFilter
 from app.rag.vector_store import LocalVectorStore
+from app.rag.storage import load_store
 
 logger = logging.getLogger(__name__)
 
@@ -85,7 +88,7 @@ class ExerciseRetriever:
     # ---------------- 加载 ----------------
 
     @classmethod
-    async def load(cls) -> "ExerciseRetriever":
+    async def load(cls, *, enable_dense: bool = True, enable_rerank: bool = True) -> "ExerciseRetriever":
         from sqlalchemy import select
 
         from app.database.models import Exercise
@@ -99,18 +102,25 @@ class ExerciseRetriever:
             )
         docs = [ExerciseDoc.from_model(r) for r in rows]
 
-        store = LocalVectorStore.load(resolve_path(settings.data.index_dir))
+        try:
+            store = await asyncio.to_thread(load_store, resolve_path(settings.data.index_dir)) if enable_dense else None
+        except Exception as exc:
+            logger.warning("向量库加载失败，仅使用 BM25: %s", type(exc).__name__)
+            store = None
+        if store is not None and set(store.ids) != set(d.id for d in docs):
+            logger.warning("向量索引与动作 ID 不一致，禁用向量检索")
+            store = None
         embedder: Embedder | None = None
-        if store is None:
+        if store is None and enable_dense:
             logger.warning("未找到向量索引，仅使用 BM25 检索")
-        elif store.meta.get("embedding_model") != settings.embedding.model:
+        elif store is not None and store.meta.get("embedding_model") != settings.embedding.model:
             logger.warning(
                 "向量索引的模型 %s 与当前配置 %s 不一致，已禁用向量检索，请重新入库",
                 store.meta.get("embedding_model"),
                 settings.embedding.model,
             )
             store = None
-        else:
+        elif store is not None:
             try:
                 embedder = create_embedder(settings.embedding)
             except Exception as exc:  # 缺少 key 等
@@ -118,7 +128,7 @@ class ExerciseRetriever:
                 store = None
 
         reranker = None
-        if settings.reranker.enabled:
+        if enable_rerank and settings.reranker.enabled:
             try:
                 reranker = Reranker(settings.reranker)
             except Exception as exc:
@@ -158,8 +168,38 @@ class ExerciseRetriever:
         return vec
 
     async def search(
-        self, query: str, filters: ExerciseFilter | None = None, top_k: int | None = None
+        self, query: str, filters: ExerciseFilter | None = None, top_k: int | None = None,
+        *, mode: str = "hybrid", rerank: bool | None = None,
     ) -> SearchResult:
+        from app.database.models import RetrievalLog
+        from app.observability.recorder import record
+        start = time.perf_counter()
+        result, error = None, None
+        filters = filters or ExerciseFilter()
+        try:
+            result = await self._search(query, filters, top_k, mode=mode, rerank=rerank)
+            return result
+        except BaseException as exc:
+            error = type(exc).__name__
+            raise
+        finally:
+            degraded = bool(result and result.total_candidates and query.strip()) and (
+                (mode == "hybrid" and (result is None or not result.mode.startswith("hybrid")))
+                or (mode == "dense" and (result is None or not result.mode.startswith("dense")))
+                or bool(result and any("暂不可用" in w for w in result.warnings))
+            )
+            record(RetrievalLog, query=query, filters=filters.model_dump(mode="json"),
+                   mode=result.mode if result else mode, candidates=result.total_candidates if result else 0,
+                   hit_ids=[h.doc.id for h in result.hits] if result else [],
+                   latency_ms=(time.perf_counter() - start) * 1000, degraded=degraded,
+                   status="error" if error else "success", error=error)
+
+    async def _search(
+        self, query: str, filters: ExerciseFilter | None = None, top_k: int | None = None,
+        *, mode: str = "hybrid", rerank: bool | None = None,
+    ) -> SearchResult:
+        if mode not in {"bm25", "dense", "hybrid"}:
+            raise ValueError("mode must be bm25, dense, or hybrid")
         filters = filters or ExerciseFilter()
         top_k = top_k or self.cfg.default_top_k
         candidates = [self.docs[i] for i in self._order if filters.matches(self.docs[i])]
@@ -184,14 +224,14 @@ class ExerciseRetriever:
         warnings: list[str] = []
 
         dense: list[tuple[str, float]] = []
-        if self.vector_store is not None:
+        if mode != "bm25" and self.vector_store is not None:
             try:
                 qvec = await self._embed_query(query)
-                dense = self.vector_store.search(qvec, self.cfg.dense_top_k, allowed)
+                dense = await asyncio.to_thread(self.vector_store.search, qvec, self.cfg.dense_top_k, allowed)
             except Exception as exc:
                 logger.warning("向量检索失败，降级为关键词检索：%s", exc)
                 warnings.append("向量检索暂不可用，本次结果仅基于关键词匹配")
-        sparse = self.bm25.search(query, self.cfg.sparse_top_k, allowed)
+        sparse = self.bm25.search(query, self.cfg.sparse_top_k, allowed) if mode != "dense" else []
 
         fused = rrf_fuse([r for r in (dense, sparse) if r], k=self.cfg.rrf_k)
         if not fused:
@@ -214,9 +254,9 @@ class ExerciseRetriever:
             )
             for doc_id, score in fused
         ]
-        mode = "hybrid" if dense else "sparse_only"
+        mode = "hybrid" if dense and sparse else "dense_only" if dense else "sparse_only"
 
-        if self.reranker is not None and len(hits) > 1:
+        if self.reranker is not None and rerank is not False and len(hits) > 1:
             pool = hits[: self.rerank_candidates]
             try:
                 ranked = await self.reranker.rerank(
@@ -262,7 +302,12 @@ async def refresh_provider_clients() -> list[str]:
     retriever = _retriever
     if retriever is None:
         return warnings
-    store = LocalVectorStore.load(resolve_path(settings.data.index_dir))
+    try:
+        store = await asyncio.to_thread(load_store, resolve_path(settings.data.index_dir))
+    except Exception as exc:
+        logger.warning("向量库加载失败：%s", type(exc).__name__)
+        warnings.append("向量库未就绪，动作检索只使用关键词。")
+        store = None
     embedder: Embedder | None = None
     if store is None:
         warnings.append("未找到向量索引，动作检索只使用关键词。")

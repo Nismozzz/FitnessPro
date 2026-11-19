@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from sqlalchemy import event, inspect, text
+from sqlalchemy import event, inspect
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
@@ -27,16 +27,24 @@ SessionLocal = async_sessionmaker(engine, expire_on_commit=False)
 
 
 async def init_db() -> None:
-    """创建表结构。正式环境建议改用 Alembic 迁移。"""
-    from app.database import models  # noqa: F401  注册模型
+    """通过版本化迁移初始化/升级；已有无版本数据库需显式接管。"""
+    from alembic import command
+    from alembic.config import Config
+    from app.config import PROJECT_ROOT
 
     if engine.dialect.name == "sqlite" and engine.url.database:
         Path(engine.url.database).parent.mkdir(parents=True, exist_ok=True)
 
+    def migrate(connection):
+        tables = set(inspect(connection).get_table_names())
+        if tables and "alembic_version" not in tables:
+            raise RuntimeError(
+                "检测到无版本记录的旧数据库；请先备份，再运行 "
+                "python -m scripts.adopt_legacy_db，检查通过后重启。"
+            )
+        cfg = Config(str(PROJECT_ROOT / "alembic.ini"))
+        cfg.attributes["connection"] = connection
+        command.upgrade(cfg, "head")
+
     async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-        # Additive upgrade for existing local databases; all original profile data is retained.
-        columns = await conn.run_sync(lambda c: {x["name"] for x in inspect(c).get_columns("user_profiles")})
-        for name, sql_type in (("training_location", "VARCHAR(24)"), ("excluded_equipment", "JSON")):
-            if name not in columns:
-                await conn.execute(text(f"ALTER TABLE user_profiles ADD COLUMN {name} {sql_type}"))
+        await conn.run_sync(migrate)

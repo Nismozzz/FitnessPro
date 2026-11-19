@@ -13,6 +13,10 @@ os.environ.setdefault("FAST_LLM_API_KEY", "test")
 import pytest  # noqa: E402
 
 from app.database.session import init_db  # noqa: E402
+from app.config import settings  # noqa: E402
+
+# Unit tests use isolated local indexes; Qdrant has dedicated integration tests.
+settings.vector_store.type = "local"
 
 
 @pytest.fixture

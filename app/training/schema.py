@@ -98,12 +98,6 @@ class LogCreate(StrictModel):
         return self
 
 
-class SuggestRequest(StrictModel):
-    plan_id: str | None = Field(None, max_length=32, description="来源计划。省略则使用当前激活的计划")
-    week_start: date | None = Field(None, description="目标周的周一。省略则为来源计划的下一周")
-    replace_stalled: bool = Field(False, description="为真时，把停滞动作替换为第一个同器械候选。默认只返回候选，不替换")
-
-
 class Replacement(StrictModel):
     weekday: int = Field(ge=0, le=6)
     position: int = Field(ge=0, le=14, description="动作序号，从 0 开始")

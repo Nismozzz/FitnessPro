@@ -120,7 +120,7 @@ async def test_loop_tool_then_answer():
     loop = AgentLoop(llm, ToolExecutor([EchoTool()]), AgentSettings(max_iterations=4))
     events, transcript = await collect(loop, [{"role": "user", "content": "hi"}])
 
-    types = [e.type for e in events]
+    types = [e.type for e in events if e.type != "progress"]
     assert types == ["content_reset", "tool_call", "tool_result", "content", "content", "done"]
     assert next(e for e in events if e.type == "tool_call").data["arguments"] == {"text": "hi"}
     assert events[-1].data["status"] == "completed"
@@ -164,7 +164,7 @@ async def test_loop_llm_error_ends_with_done():
 
     loop = AgentLoop(Broken(), ToolExecutor([EchoTool()]), AgentSettings())
     events, transcript = await collect(loop, [{"role": "user", "content": "x"}])
-    assert [e.type for e in events][-2:] == ["error", "done"]
+    assert [e.type for e in events if e.type != "progress"][-2:] == ["error", "done"]
     assert events[-1].data["status"] == "error"
     assert transcript == [{"role": "assistant", "content": "部分"}]
 
@@ -178,8 +178,9 @@ async def test_reasoning_is_private_and_replayed_only_within_turn():
     loop = AgentLoop(llm, ToolExecutor([EchoTool()]), AgentSettings(max_iterations=4))
     events, transcript = await collect(loop, [{"role": "user", "content": "训练建议"}])
 
-    assert [e.type for e in events] == ["content_reset", "tool_call", "tool_result", "content", "done"]
+    assert [e.type for e in events if e.type != "progress"] == ["content_reset", "tool_call", "tool_result", "content", "done"]
     assert not any(e.type == "thinking" for e in events)
+    assert {e.data["phase"] for e in events if e.type == "progress"} >= {"waiting", "reasoning", "model_done"}
     assert "先检查用户的训练情况" not in str(events)
     assert "再结合工具结果" not in str(events)
     assert sum(e.type == "done" for e in events) == 1
@@ -201,7 +202,7 @@ async def test_thinking_only_failure_has_one_terminal_event_and_no_persistence()
         AgentLoop(BrokenReasoning(), ToolExecutor([]), AgentSettings()),
         [{"role": "user", "content": "hi"}],
     )
-    assert [e.type for e in events] == ["error", "done"]
+    assert [e.type for e in events if e.type != "progress"] == ["error", "done"]
     assert transcript == []
 
 
@@ -261,7 +262,7 @@ async def test_failed_tool_round_does_not_publish_narration():
         AgentLoop(BrokenToolStream(), ToolExecutor([EchoTool()]), AgentSettings()),
         [{'role': 'user', 'content': '计划'}],
     )
-    assert [e.type for e in events] == ['content', 'content_reset', 'error', 'done']
+    assert [e.type for e in events if e.type != "progress"] == ['content', 'content_reset', 'error', 'done']
     assert transcript == []
     assert events[-1].data['status'] == 'error'
 

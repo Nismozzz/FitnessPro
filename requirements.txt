@@ -14,10 +14,12 @@ python-dotenv>=1.0
 sqlalchemy[asyncio]>=2.0.30
 aiosqlite>=0.20
 asyncpg>=0.29
+alembic>=1.13,<2
 
 # 模型调用（OpenAI 兼容接口：DeepSeek / SiliconFlow / 通义等）
 openai>=1.40
 httpx>=0.27
+Pillow>=11.0
 
 # 检索
 numpy>=1.26
@@ -37,3 +39,6 @@ tzdata>=2024.1
 
 # 可选：本地 Embedding（config.yml 中 embedding.provider=local 时需要）
 # sentence-transformers>=3.0
+
+# 可选：在线 RAG 评估（config.yml 中 evaluation.enabled=true 时需要）
+# ragas>=0.4

@@ -14,6 +14,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, ValidationError
 
 from app.llm.provider import get_llm
+from app.observability.context import traced_module
 from app.llm.tokens import truncate_to_tokens
 from app.memory.service import CANDIDATE, MemoryKind, MemoryScope, memory_service
 
@@ -44,6 +45,7 @@ class ExtractedOp(BaseModel):
     confidence: float = Field(0.5, ge=0, le=1)
 
 
+@traced_module("memory")
 async def extract_memories(
     *, user_id: str, session_id: str, user_message: str, assistant_message: str
 ) -> int:

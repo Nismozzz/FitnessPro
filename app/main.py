@@ -13,11 +13,13 @@ from fastapi.staticfiles import StaticFiles
 from app.training.service import TrainingError
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import agent, auth, knowledge, memories, settings as provider_settings, users, training
+from app.api import agent, auth, evaluations, knowledge, memories, settings as provider_settings, users, training, observability, images
 from app.config import bundle_root, settings
 from app.database.session import engine, init_db
 from app.rag.retriever import init_retriever
+from app.knowledge.retriever import init_article_retriever
 from app.utils.background import drain
+from app.observability.middleware import RequestTraceMiddleware
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
@@ -26,22 +28,25 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 async def lifespan(_app: FastAPI):
     await init_db()
     await init_retriever()
+    init_article_retriever()
     yield
     await drain()
     await engine.dispose()
 
 
 app = FastAPI(title="FitnessPro", version="0.1.0", lifespan=lifespan)
+app.add_middleware(RequestTraceMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Request-ID"],
 )
 
 api = APIRouter(prefix="/api/v1")
-for module in (auth, users, memories, agent, knowledge, training, provider_settings):
+for module in (auth, users, memories, agent, knowledge, training, evaluations, observability, images, provider_settings):
     api.include_router(module.router)
 app.include_router(api)
 

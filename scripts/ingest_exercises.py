@@ -30,6 +30,8 @@ from app.config import resolve_path, settings
 from app.database.models import Exercise
 from app.database.session import SessionLocal, init_db
 from app.llm.provider import get_llm
+from app.observability.context import traced_module
+from app.utils.background import drain
 from app.rag.embeddings import create_embedder
 from app.rag.schema import ExerciseDoc
 from app.rag.vector_store import LocalVectorStore
@@ -104,6 +106,7 @@ def parse_raw(items: list[dict[str, Any]]) -> list[RawExercise]:
     return parsed
 
 
+@traced_module("translate")
 async def translate_batch(batch: list[RawExercise]) -> dict[str, Translation]:
     payload = [{"id": e.id, "name": e.name, "instructions": e.instructions} for e in batch]
     expected = {e.id for e in batch}
@@ -235,10 +238,19 @@ async def build_index(docs: list[ExerciseDoc]) -> None:
     )
     index_dir = resolve_path(settings.data.index_dir)
     store.save(index_dir)
+    from app.rag.storage import publish_store
+    await asyncio.to_thread(publish_store, index_dir, "exercises")
     logger.info("向量索引已保存到 %s（维度 %d）", index_dir, store.dim)
 
 
 async def main(args: argparse.Namespace) -> None:
+    try:
+        await _main(args)
+    finally:
+        await drain()
+
+
+async def _main(args: argparse.Namespace) -> None:
     await init_db()
     exercises = parse_raw(await load_raw(args.source, args.refresh))
     if args.limit:

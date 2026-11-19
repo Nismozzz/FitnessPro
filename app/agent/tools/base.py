@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, ClassVar
@@ -29,6 +30,7 @@ logger = logging.getLogger(__name__)
 class ToolContext:
     user_id: str
     session_id: str
+    allow_side_effects: bool = True
 
 
 class ToolError(Exception):
@@ -131,9 +133,27 @@ class ToolExecutor:
         return [t.schema() for t in self._tools.values()]
 
     async def execute(self, call: ToolCall, ctx: ToolContext) -> ToolResult:
+        from app.database.models import ToolCallLog
+        from app.observability.recorder import record
+        from app.observability.context import trace_scope
+        start = time.perf_counter()
+        result = None
+        with trace_scope(user_id=ctx.user_id, session_id=ctx.session_id):
+            try:
+                result = await self._execute(call, ctx)
+                return result
+            finally:
+                record(ToolCallLog, tool_name=call.name,
+                       success=result.success if result else False,
+                       latency_ms=(time.perf_counter() - start) * 1000,
+                       error=result.error if result else "cancelled")
+
+    async def _execute(self, call: ToolCall, ctx: ToolContext) -> ToolResult:
         tool = self._tools.get(call.name)
         if tool is None:
             return ToolResult(False, error=f"未知工具：{call.name}，可用工具：{', '.join(self._tools)}")
+        if tool.side_effect and not ctx.allow_side_effects:
+            return ToolResult(False, error="联网搜索或图片识别轮次仅允许读取信息，不能修改记忆、画像、计划或训练记录。请让用户下一轮单独提出修改请求。")
         if call.parse_error:
             return ToolResult(False, error=f"参数不是合法的 JSON 对象（{call.parse_error}），请重新生成参数")
         try:

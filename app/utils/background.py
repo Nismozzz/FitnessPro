@@ -33,9 +33,14 @@ def spawn(coro: Coroutine[Any, Any, Any], name: str) -> asyncio.Task:
 
 async def drain(timeout: float = 30.0) -> None:
     """关闭前等待后台任务完成。"""
-    if not _tasks:
-        return
-    pending = list(_tasks)
-    done, still_pending = await asyncio.wait(pending, timeout=timeout)
-    for task in still_pending:
-        task.cancel()
+    deadline = asyncio.get_running_loop().time() + timeout
+    # Background work (memory/compression) can itself enqueue telemetry writes.
+    while _tasks:
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            pending = list(_tasks)
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
+            return
+        await asyncio.wait(list(_tasks), timeout=remaining)

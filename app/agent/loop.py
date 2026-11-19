@@ -16,14 +16,18 @@ Agent 执行循环（Function Calling 风格的 ReAct）。
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 import json
 import logging
 import time
 import uuid
 from collections.abc import AsyncIterator
+from contextlib import aclosing
 from typing import Any
 
-from app.agent.tools.base import ToolContext, ToolExecutor
+from app.agent.citations import EvidenceRegistry, KNOWLEDGE_TOOLS
+from app.agent.tools.base import ToolContext, ToolExecutor, ToolResult
+from app.agent.tools.skill_tools import LOAD_TRAINING_PLAN_SKILL, PLAN_DESIGN_TOOLS
 from app.agent.types import AgentEvent, ToolCall
 from app.config import AgentSettings
 from app.llm.provider import LLMClient
@@ -65,10 +69,12 @@ class AgentLoop:
         messages：本次执行的工作上下文（会被追加）。
         transcript：需要持久化的新消息（assistant / tool），由调用方保存。
         """
+        evidence = EvidenceRegistry()
         tools = self.executor.schemas() or None
         deadline = time.monotonic() + self.cfg.total_timeout
         usage = {"prompt_tokens": 0, "completion_tokens": 0}
         tool_calls_count = 0
+        training_skill_loaded = False
 
         for iteration in range(1, self.cfg.max_iterations + 1):
             remaining = deadline - time.monotonic()
@@ -87,9 +93,12 @@ class AgentLoop:
             if last_round:
                 request_messages = [*messages, {
                     "role": "system",
-                    "content": "本轮为收尾回答，不能再调用工具。请根据已有工具结果直接总结；若计划未保存成功，明确说明尚未保存和剩余步骤，不得声称已完成。不要叙述内部推理过程。",
+                    "content": "本轮为收尾回答，不能再调用工具。只根据已有成功工具结果中实际可见的信息回答，继续遵守依据与忠实性规则；未检索到的动作事实、未获取的详情和被截断的内容不得凭常识补齐。资料不足时只回答有依据的部分并明确说明缺失；没有依据时说明无法据此回答。拟定计划参数仍须标明为建议，不能说成知识库事实。若计划未保存成功，明确说明尚未保存和剩余步骤，不得声称已完成。不要叙述内部推理过程。",
                 }]
 
+            yield AgentEvent("progress", {"phase": "waiting", "iteration": iteration})
+            last_phase = "waiting"
+            last_progress = time.monotonic()
             content_parts: list[str] = []
             reasoning_parts: list[str] = []
             pending: dict[int, dict[str, str]] = {}
@@ -106,6 +115,11 @@ class AgentLoop:
                     if delta is None:
                         continue
                     reasoning = getattr(delta, "reasoning_content", None)
+                    phase = ("reasoning" if reasoning else "tool_arguments" if delta.tool_calls
+                             else "answering" if delta.content else None)
+                    if phase and (phase != last_phase or time.monotonic() - last_progress >= 1):
+                        yield AgentEvent("progress", {"phase": phase, "iteration": iteration})
+                        last_phase, last_progress = phase, time.monotonic()
                     if reasoning:
                         reasoning_parts.append(reasoning)
                     if delta.content:
@@ -130,7 +144,13 @@ class AgentLoop:
                 logger.exception("LLM 调用失败 session=%s iteration=%d", ctx.session_id, iteration)
                 partial = "".join(content_parts)
                 if partial and not pending:
-                    transcript.append({"role": "assistant", "content": partial})
+                    cleaned, citations, invalid = evidence.resolve(partial)
+                    if cleaned != partial:
+                        yield AgentEvent("content_reset", {})
+                        yield AgentEvent("content", {"delta": cleaned})
+                    if citations or invalid:
+                        yield AgentEvent("citations", {"citations": citations, "invalid_ids": invalid})
+                    transcript.append({"role": "assistant", "content": cleaned})
                 timed_out = isinstance(exc, TimeoutError)
                 yield AgentEvent("error", {"message": "本次任务处理超时" if timed_out else f"模型调用失败：{type(exc).__name__}"})
                 yield self._done("timeout" if timed_out else "error", iteration, usage, tool_calls_count)
@@ -138,15 +158,29 @@ class AgentLoop:
 
             content = "".join(content_parts)
 
+            yield AgentEvent("progress", {"phase": "model_done", "iteration": iteration})
+
             if not pending:
-                transcript.append({"role": "assistant", "content": content})
+                cleaned, citations, invalid = evidence.resolve(content)
+                if cleaned != content:
+                    yield AgentEvent("content_reset", {})
+                    yield AgentEvent("content", {"delta": cleaned})
+                if citations or invalid:
+                    yield AgentEvent("citations", {"citations": citations, "invalid_ids": invalid})
+                transcript.append({"role": "assistant", "content": cleaned})
                 yield self._done("completed", iteration, usage, tool_calls_count)
                 return
 
             if last_round:
                 # 已禁止工具调用但模型仍然返回了调用：结束本轮，保留已有文本
+                cleaned, citations, invalid = evidence.resolve(content)
+                if cleaned != content:
+                    yield AgentEvent("content_reset", {})
+                    yield AgentEvent("content", {"delta": cleaned})
+                if citations or invalid:
+                    yield AgentEvent("citations", {"citations": citations, "invalid_ids": invalid})
                 transcript.append(
-                    {"role": "assistant", "content": content or "（本次任务步骤过多，未能完成，请缩小问题范围后重试）"}
+                    {"role": "assistant", "content": cleaned or "（本次任务步骤过多，未能完成，请缩小问题范围后重试）"}
                 )
                 yield AgentEvent("error", {"message": "达到最大推理轮数"})
                 yield self._done("max_iterations", iteration, usage, tool_calls_count)
@@ -184,6 +218,12 @@ class AgentLoop:
             messages.append(working_msg)
             transcript.append(assistant_msg)
 
+            # Lock the whole batch before executing anything, even if a write is
+            # listed before web_search. This immutable context persists this turn.
+            if any(call.name in {"web_search", "identify_equipment"} for call in calls):
+                ctx = replace(ctx, allow_side_effects=False)
+            skill_visible_to_model = training_skill_loaded
+            pending_skill_message = None
             for call in calls:
                 tool_calls_count += 1
                 yield AgentEvent(
@@ -197,12 +237,42 @@ class AgentLoop:
                     return
                 try:
                     async with asyncio.timeout(remaining):
-                        result = await self.executor.execute(call, ctx)
+                        if (
+                            call.name in PLAN_DESIGN_TOOLS
+                            and call.name in self.executor.names
+                            and not skill_visible_to_model
+                        ):
+                            result = ToolResult(False, error=(
+                                "本轮尚未读取训练规划技能。请先单独调用 load_training_plan_skill，"
+                                "读取成功后再编排计划；不能与技能加载放在同一批调用中。"
+                            ))
+                        else:
+                            result = await self.executor.execute(call, ctx)
                 except TimeoutError:
                     yield AgentEvent("error", {"message": "本次任务处理超时，请查看周训练计划页确认草稿是否已保存"})
                     yield self._done("timeout", iteration, usage, tool_calls_count)
                     return
-                content_str = result.to_content(self.tool_result_max_tokens)
+                skill_message = None
+                if result.success and call.name == LOAD_TRAINING_PLAN_SKILL:
+                    # 仅本地固定技能工具可以提供正文。正文独立进入本轮系统上下文，
+                    # 不受工具结果截断，也不落入 transcript 或前端事件。
+                    if not training_skill_loaded:
+                        skill_message = {
+                            "role": "system",
+                            "content": (
+                                "## 本轮已加载训练规划技能：training-plan-design\n"
+                                "以下为应用维护的规划规则；不覆盖既有证据、工具权限、"
+                                "保存确认流程及安全边界，也不作为文献证据。\n\n"
+                                + result.data["body"]
+                            ),
+                        }
+                        training_skill_loaded = True
+                    result = ToolResult(True, data={"name": "training-plan-design", "loaded": True})
+
+                if result.success and call.name in KNOWLEDGE_TOOLS and isinstance(result.data, dict):
+                    content_str = evidence.tool_content(result.data, self.tool_result_max_tokens)
+                else:
+                    content_str = result.to_content(self.tool_result_max_tokens)
                 messages.append({"role": "tool", "tool_call_id": call.id, "content": content_str})
                 transcript.append(
                     {"role": "tool", "tool_call_id": call.id, "name": call.name, "content": content_str}
@@ -218,6 +288,13 @@ class AgentLoop:
                         "ms": int((time.monotonic() - started) * 1000),
                     },
                 )
+                if skill_message is not None:
+                    # 放在该批所有工具结果之后，保持 assistant/tool 协议连续。
+                    # 同批尚未执行的结果会先追加，批结束后再注入。
+                    pending_skill_message = skill_message
+
+            if pending_skill_message is not None:
+                messages.append(pending_skill_message)
 
         # for 循环正常结束只可能发生在 max_iterations <= 0 的配置下
         yield AgentEvent("error", {"message": "max_iterations 配置无效"})
@@ -226,8 +303,9 @@ class AgentLoop:
     async def _stream_with_deadline(self, messages, tools, remaining, overrides):
         # SDK timeout 是网络读超时，不是整条流的总时限。
         async with asyncio.timeout(remaining):
-            async for chunk in self.llm.stream(messages, tools=tools, **overrides):
-                yield chunk
+            async with aclosing(self.llm.stream(messages, tools=tools, **overrides)) as stream:
+                async for chunk in stream:
+                    yield chunk
 
     @staticmethod
     def _done(status: str, iterations: int, usage: dict, tool_calls: int) -> AgentEvent:

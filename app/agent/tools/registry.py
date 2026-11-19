@@ -4,16 +4,24 @@ from app.agent.tools.base import BaseTool
 
 
 def build_default_tools() -> list[BaseTool]:
+    from app.agent.tools.article_tools import SearchKnowledgeArticlesTool
     from app.agent.tools.exercise_tools import GetExerciseDetailTool, SearchExercisesTool
     from app.agent.tools.memory_tools import ConfirmMemoryTool, ForgetMemoryTool, SaveMemoryTool
     from app.agent.tools.profile_tools import GetUserProfileTool, UpdateUserProfileTool
     from app.agent.tools.time_tool import CurrentTimeTool
+    from app.agent.tools.skill_tools import LoadTrainingPlanSkillTool
+    from app.agent.tools.web_search import WebSearchTool
+    from app.agent.tools.vision_tools import IdentifyEquipmentTool
 
-    from app.agent.tools.plan_tools import DraftWeeklyPlanTool, SavePlanTool, GetActivePlanTool, UpdatePlanExerciseTool, LogWorkoutTool, GetTrainingStatsTool, SuggestNextWeekTool
+    from app.agent.tools.plan_tools import DraftWeeklyPlanTool, SavePlanTool, GetActivePlanTool, UpdatePlanExerciseTool, LogWorkoutTool, GetTrainingStatsTool, SuggestNextWeekTool, ApplyNextWeekTool
 
     return [
-        DraftWeeklyPlanTool(), SavePlanTool(), GetActivePlanTool(), UpdatePlanExerciseTool(), LogWorkoutTool(), GetTrainingStatsTool(), SuggestNextWeekTool(),
+        IdentifyEquipmentTool(),
+        LoadTrainingPlanSkillTool(),
+        DraftWeeklyPlanTool(), SavePlanTool(), GetActivePlanTool(), UpdatePlanExerciseTool(), LogWorkoutTool(), GetTrainingStatsTool(),
+        SuggestNextWeekTool(), ApplyNextWeekTool(),
         SearchExercisesTool(),
+        SearchKnowledgeArticlesTool(),
         GetExerciseDetailTool(),
         GetUserProfileTool(),
         UpdateUserProfileTool(),
@@ -21,4 +29,5 @@ def build_default_tools() -> list[BaseTool]:
         ConfirmMemoryTool(),
         ForgetMemoryTool(),
         CurrentTimeTool(),
+        WebSearchTool(),
     ]

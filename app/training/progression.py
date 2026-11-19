@@ -1,470 +1,208 @@
-"""根据实际完成组生成下一周处方。
-
-双进阶：每一组都达到次数上限，并且达到目标重量后，才增加负重；次数区间保持不变。
-徒手和弹力带做到上限后加次数，次数已到该目标的上限则加一组。
-完不成计划组数或低于下限则减量。任一组 RPE ≥ 9.5 时不加重。
-最近 3 次训练的最好一组都没有提高，记为停滞。
-"""
-
-from __future__ import annotations
-
-import copy
+"""Record-driven progression: deterministic rules, read-only preview, confirmed draft creation."""
 from collections import defaultdict
-from datetime import date, datetime, timedelta, timezone
-from typing import Any
+from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from app.rag.schema import LEVEL_ORDER
-from app.training.schema import PlanDraft
+from pydantic import Field
+from sqlalchemy import select
+
+from app.config import settings
+from app.database.models import PlanDay, WorkoutLog, WorkoutPlan, WorkoutSet
+from app.database.session import SessionLocal
+from app.rag.retriever import KnowledgeBaseNotReady, get_retriever
+from app.rag.schema import ExerciseFilter, LEVEL_ORDER
+from app.training import service
+from app.training.schema import PlanDraft, StrictModel
+from app.training.stats import epley
 from app.training.validator import validate_plan
 
-LOAD_STEP = {
-    "barbell": 2.5,
-    "e-z curl bar": 2.5,
-    "dumbbell": 2.0,
-    "kettlebells": 4.0,
-    "machine": 2.5,
-    "cable": 2.5,
-}
-REP_CAP = {
-    "strength": 6,
-    "muscle_gain": 12,
-    "endurance": 20,
-    "fat_loss": 20,
-    "general_fitness": 15,
-    "rehab": 15,
-}
-REP_FLOOR = {
-    "strength": 3,
-    "muscle_gain": 6,
-    "endurance": 12,
-    "fat_loss": 8,
-    "general_fitness": 8,
-    "rehab": 6,
-}
-MAX_SETS = 5
-DURATION_STEP = 5
-DURATION_FLOOR = 10
-DURATION_CAP = 180
-HIGH_RPE = 9.5
-VIEW_FIELDS = ("sets", "reps_min", "reps_max", "duration_seconds", "target_weight_kg")
-
-RULES = [
-    "双进阶：同一动作的每一组都达到次数上限，并且达到目标重量后，才增加负重；次数区间保持不变。",
-    "徒手或弹力带做到次数上限后加一次数；次数已到该目标的上限则加一组，最多 5 组。",
-    "未完成计划组数，或次数、时长低于目标，则降低重量、次数或组数。",
-    "任一组 RPE 达到 9.5 时，即使做到上限也不加重。",
-    "最近 3 次训练的最好一组都没有提高，记为停滞，并给出同器械、同主肌群的替换候选。",
-    "本周没有完成记录的动作维持原处方。这里只生成草稿，不会保存或激活。",
-]
+LOWER_BODY = {"quadriceps", "hamstrings", "glutes", "calves", "abductors", "adductors"}
 
 
-def counts_for_day(
-    performed_at: datetime,
-    plan_day_id: str | None,
-    day_id: str,
-    weekday: int,
-    week_start: date,
-    start: datetime,
-    end: datetime,
-    tz: ZoneInfo,
-) -> bool:
-    """计划日上的记录优先；未关联计划的记录只计入它实际发生的那个星期。"""
-    if not start <= performed_at < end:
-        return False
-    if plan_day_id == day_id:
-        return True
-    if plan_day_id:
-        return False
-    local_date = performed_at.replace(tzinfo=timezone.utc).astimezone(tz).date()
-    return local_date == week_start + timedelta(days=weekday)
+class ReplacementChoice(StrictModel):
+    weekday: int = Field(ge=0, le=6)
+    position: int = Field(ge=0, le=14)
+    exercise_id: str = Field(min_length=1, max_length=128)
 
 
-def session_best(sets: list[dict], timed: bool) -> tuple | None:
-    done = _successful(sets)
-    if timed:
-        values = [entry["duration_seconds"] for entry in done if entry.get("duration_seconds")]
-        return (max(values),) if values else None
-    best = None
-    for entry in done:
-        if not entry.get("reps"):
-            continue
-        key = (float(entry["weight_kg"] or 0), int(entry["reps"]))
-        if best is None or key > best:
-            best = key
-    return best
+class ApplyNextWeek(StrictModel):
+    suggestion_id: str = Field(min_length=64, max_length=64)
+    replacements: list[ReplacementChoice] = Field(default_factory=list, max_length=50)
 
 
-def build_performances(
-    plan: PlanDraft,
-    day_ids: dict[int, str],
-    rows: list[dict],
-    start: datetime,
-    end: datetime,
-    tz: ZoneInfo,
-) -> dict[tuple[int, int], dict]:
-    grouped: dict[str, list[dict]] = defaultdict(list)
-    for row in rows:
-        grouped[row["exercise_id"]].append(row)
-    result = {}
-    for day in plan.days:
-        day_id = day_ids[day.weekday]
-        for index, exercise in enumerate(day.exercises):
-            logs: dict[str, list[dict]] = defaultdict(list)
-            meta: dict[str, tuple] = {}
-            for item in grouped.get(exercise.exercise_id, []):
-                if item["performed_at"] >= end:
-                    continue
-                logs[item["log_id"]].append(item)
-                meta[item["log_id"]] = (item["performed_at"], item.get("plan_day_id"))
-            history = []
-            completed = []
-            for log_id in sorted(logs, key=lambda item: (meta[item][0], item)):
-                entries = logs[log_id]
-                best = session_best(entries, exercise.duration_seconds is not None)
-                if best is not None:
-                    history.append(best)
-                performed_at, plan_day_id = meta[log_id]
-                if counts_for_day(performed_at, plan_day_id, day_id, day.weekday, plan.week_start, start, end, tz):
-                    completed.extend(entries)
-            result[(day.weekday, index)] = {"completed": completed, "history": history}
-    return result
+def analyze_exercise(prescription, doc: dict, sessions: list[dict], completed_week_end: date) -> dict | None:
+    """Sessions are chronological, with local date, sets, and optional historical prescription.
 
-
-def is_stalled(history: list[tuple]) -> bool:
-    """最近 3 次的最好一组没有超过这 3 次里更早的两次。"""
-    if len(history) < 3:
-        return False
-    first, middle, last = history[-3:]
-    return last <= first and last <= middle
-
-
-def rank_replacements(source: dict, rows: list[dict], level: str) -> list[dict]:
-    muscles = set(source.get("primary_muscles") or [])
-    limit = LEVEL_ORDER.get(level, 0) + 1
-    source_level = LEVEL_ORDER.get(source.get("level"), 0)
-    picked = []
-    for row in rows:
-        if row.get("id") == source.get("id") or row.get("equipment") != source.get("equipment"):
-            continue
-        if source.get("category") and row.get("category") != source.get("category"):
-            continue
-        if not muscles & set(row.get("primary_muscles") or []):
-            continue
-        if LEVEL_ORDER.get(row.get("level"), 99) > limit:
-            continue
-        picked.append(row)
-    picked.sort(key=lambda row: (LEVEL_ORDER.get(row.get("level"), 99) != source_level, row.get("name") or ""))
-    return picked[:3]
-
-
-def prescribe(prescription: dict, equipment: str, goal: str, completed: list[dict], history: list[tuple]) -> dict:
-    updated = _copy(prescription)
-    done = _successful(completed)
-    kind = _classify(updated, completed, done, equipment)
-    action, reason = _apply(updated, kind, equipment, goal, done)
-    plateau = bool(completed) and is_stalled(history)
-    stalled = plateau and action == "hold" and kind in {"in_range", "top"}
-    if stalled and kind == "in_range":
-        reason += "最近 3 次最好成绩没有提高，可替换同器械动作，或继续把每组做到次数上限。"
-    elif stalled:
-        reason += "最近 3 次最好成绩没有提高，当前组次已到上限，建议替换同器械动作。"
-    elif plateau and action in {"increase_load", "increase_reps", "increase_duration", "add_set"}:
-        reason += "最近 3 次最好成绩没有提高，所以这次提高要求。"
-    return {
-        "action": action,
-        "reason": reason,
-        "stalled": stalled,
-        "before": _view(prescription),
-        "after": _view(updated),
-        "prescription": updated,
-    }
-
-
-def progress_plan(
-    plan: PlanDraft,
-    performances: dict[tuple[int, int], dict],
-    docs: dict[str, dict],
-    profile: dict,
-    candidates: dict[str, list[dict]],
-    replace_stalled: bool,
-    target_week: date,
-) -> dict:
-    data = plan.model_dump()
-    data["week_start"] = target_week
-    decisions = []
-    for day in data["days"]:
-        for index, exercise in enumerate(day["exercises"]):
-            perf = performances.get((day["weekday"], index), {})
-            doc = docs.get(exercise["exercise_id"], {})
-            decision = prescribe(
-                exercise,
-                doc.get("equipment") or "",
-                plan.goal,
-                perf.get("completed") or [],
-                perf.get("history") or [],
-            )
-            updated = decision.pop("prescription")
-            from_id = exercise["exercise_id"]
-            options = [_public_candidate(row) for row in candidates.get(from_id, [])] if decision["stalled"] else []
-            if decision["stalled"] and replace_stalled and options:
-                choice = options[0]
-                updated = {**updated, "exercise_id": choice["id"]}
-                decision["action"] = "replace"
-                decision["after"] = _view(updated)
-                label = choice.get("name_zh") or choice["name"]
-                decision["reason"] += f" 已写入替换动作{label}，组次和重量保持不变。"
-            decision.update({
-                "weekday": day["weekday"],
-                "position": index,
-                "from_exercise_id": from_id,
-                "exercise_id": updated["exercise_id"],
-                "name": doc.get("name_zh") or doc.get("name") or from_id,
-                "replacement_candidates": options,
-                "_original": exercise,
-                "_source_name": doc.get("name_zh") or doc.get("name") or from_id,
-            })
-            if decision["action"] == "replace":
-                decision["name"] = options[0].get("name_zh") or options[0]["name"]
-            day["exercises"][index] = updated
-            decisions.append(decision)
-
-    draft, validation = _restore_until_valid(data, decisions, profile, docs)
-    for decision in decisions:
-        decision.pop("_original", None)
-        decision.pop("_source_name", None)
-    return {"draft": draft.model_dump(mode="json"), "decisions": decisions, "validation": validation}
-
-
-def _classify(prescription: dict, completed: list[dict], done: list[dict], equipment: str) -> str:
-    if not completed:
-        return "none"
-    if len(done) < prescription["sets"]:
-        return "short"
-    if prescription.get("duration_seconds") is not None:
-        target = prescription["duration_seconds"]
-        if any((entry.get("duration_seconds") or 0) < target for entry in done):
-            return "short"
-        return "hard" if _hard(done) else "top"
-    if any(entry.get("reps") is None or entry["reps"] < prescription["reps_min"] for entry in done):
-        return "short"
-    if any(entry["reps"] < prescription["reps_max"] for entry in done):
-        return "in_range"
-    if _hard(done):
-        return "hard"
-    if equipment in LOAD_STEP:
-        weights = _weights(done)
-        if weights is None:
-            return "top_no_weight"
-        target = prescription.get("target_weight_kg")
-        if target is not None and min(weights) + 1e-9 < float(target):
-            return "below_load"
-    return "top"
-
-
-def _apply(updated: dict, kind: str, equipment: str, goal: str, completed: list[dict]) -> tuple[str, str]:
-    if kind == "none":
-        return "hold", "本周没有这条动作的完成记录，维持原处方。"
-    if kind == "hard":
-        return "hold", "已完成计划，但有组次达到 RPE 9.5，先维持负荷。"
-    if kind == "top_no_weight":
-        return "hold", "次数已到上限，但缺少完整的重量记录，补记后再加重。"
-    if kind == "below_load":
-        return "hold", "次数已到上限，但最低完成重量低于目标，维持目标重量。"
-    if kind == "in_range":
-        return "hold", "各组都完成了，但还没有全部达到次数上限，维持原处方。"
-    if kind == "top":
-        return _advance(updated, equipment, goal, completed)
-    return _reduce(updated, equipment, goal, completed)
-
-
-def _advance(updated: dict, equipment: str, goal: str, completed: list[dict]) -> tuple[str, str]:
-    if updated.get("duration_seconds") is not None:
-        if updated["duration_seconds"] < DURATION_CAP:
-            updated["duration_seconds"] = min(DURATION_CAP, updated["duration_seconds"] + DURATION_STEP)
-            return "increase_duration", f"各组都完成了目标时长，下次 {_kg_duration(updated['duration_seconds'])}。"
-        if updated["sets"] < MAX_SETS:
-            updated["sets"] += 1
-            return "add_set", "目标时长已到上限，增加 1 组。"
-        return "hold", "时长和组数已到当前上限，维持原处方。"
-    if equipment in LOAD_STEP:
-        weights = _weights(completed) or []
-        base = min(weights) if weights else float(updated.get("target_weight_kg") or 0)
-        target = updated.get("target_weight_kg")
-        if target is not None:
-            base = max(base, float(target))
-        updated["target_weight_kg"] = _round_kg(base + LOAD_STEP[equipment])
-        return "increase_load", f"每一组都达到 {updated['reps_max']} 次，下次目标 {_kg(updated['target_weight_kg'])} kg，次数仍是 {updated['reps_min']}–{updated['reps_max']}。"
-    cap = REP_CAP.get(goal, 15)
-    if updated["reps_max"] < cap:
-        updated["reps_min"] += 1
-        updated["reps_max"] += 1
-        return "increase_reps", f"各组都达到次数上限，下次 {updated['reps_min']}–{updated['reps_max']} 次。"
-    if updated["sets"] < MAX_SETS:
-        updated["sets"] += 1
-        return "add_set", "次数已到该目标的上限，增加 1 组。"
-    return "hold", "次数和组数已到当前目标的上限，维持原处方。"
-
-
-def _reduce(updated: dict, equipment: str, goal: str, completed: list[dict]) -> tuple[str, str]:
-    if updated.get("duration_seconds") is not None:
-        if updated["duration_seconds"] > DURATION_FLOOR:
-            updated["duration_seconds"] = max(DURATION_FLOOR, updated["duration_seconds"] - DURATION_STEP)
-            return "reduce_duration", f"未达到目标时长，下次 {_kg_duration(updated['duration_seconds'])}。"
-        if updated["sets"] > 2:
-            updated["sets"] -= 1
-            return "reduce_sets", "时长已较低，减少 1 组。"
-        return "hold", "时长和组数已经较低，维持原处方。"
-    if equipment in LOAD_STEP:
-        weights = _weights(completed)
-        anchor = updated.get("target_weight_kg")
-        if anchor is None and weights:
-            anchor = min(weights)
-        if anchor is not None and float(anchor) > 0:
-            new_weight = max(0, _round_kg(float(anchor) - LOAD_STEP[equipment]))
-            if new_weight < float(anchor):
-                updated["target_weight_kg"] = new_weight
-                return "reduce_load", f"未达到本周目标，下次目标 {_kg(new_weight)} kg。"
-    if _lower_reps(updated, goal):
-        return "reduce_reps", f"未达到本周目标，次数调整为 {updated['reps_min']}–{updated['reps_max']}。"
-    if updated["sets"] > 2:
-        updated["sets"] -= 1
-        return "reduce_sets", "次数已经较低，减少 1 组。"
-    return "hold", "训练量已经较低，维持原处方。"
-
-
-def _lower_reps(updated: dict, goal: str) -> bool:
-    if updated.get("reps_min") is None or updated.get("reps_max") is None:
-        return False
-    floor = REP_FLOOR.get(goal, 6)
-    reps_min, reps_max = updated["reps_min"], updated["reps_max"]
-    if reps_min > floor:
-        drop = min(2, reps_min - floor)
-        updated["reps_min"] = reps_min - drop
-        updated["reps_max"] = max(updated["reps_min"], reps_max - drop)
-        return True
-    if reps_max - reps_min >= 2:
-        updated["reps_max"] = reps_max - 2
-        return True
-    if reps_max > reps_min:
-        updated["reps_max"] = reps_min
-        return True
-    return False
-
-
-def _restore_until_valid(data: dict, decisions: list[dict], profile: dict, docs: dict) -> tuple[PlanDraft, dict]:
-    result: dict[str, Any] = {"valid": False, "errors": []}
-    plan = PlanDraft.model_validate(data)
-    for _ in range(len(decisions) + 1):
-        plan = PlanDraft.model_validate(data)
-        result = validate_plan(plan, profile, docs)
-        if result["valid"] or not _revert_one(data, decisions, result["errors"]):
-            break
-    return plan, result
-
-
-def _revert_one(data: dict, decisions: list[dict], errors: list[dict]) -> bool:
-    for error in errors:
-        decision = _pick_revert(data, decisions, error)
-        if decision is None:
-            continue
-        original = decision["_original"]
-        _set_exercise(data, decision["weekday"], decision["position"], copy.deepcopy(original))
-        decision["action"] = "hold"
-        decision["exercise_id"] = original["exercise_id"]
-        decision["name"] = decision.get("_source_name", decision["name"])
-        decision["after"] = _view(original)
-        decision["reason"] = f"调整后未通过计划校验（{error['code']}），已恢复原处方。"
-        if decision.get("replacement_candidates"):
-            decision["reason"] += " 仍可从候选动作里另选。"
-        return True
-    return False
-
-
-def _pick_revert(data: dict, decisions: list[dict], error: dict) -> dict | None:
-    changed = [item for item in decisions if _current(data, item) != item["_original"]]
-    if not changed:
+    Only two distinct training dates at the current prescription/load form a streak.
+    Missing sets/weights are insufficient evidence, never assumed failed/completed.
+    """
+    p = prescription
+    if p.duration_seconds is not None or doc.get("category") not in {"strength", "powerlifting", "olympic weightlifting", "strongman"}:
         return None
-    code = error.get("code")
-    if code == "duration":
-        same_day = [item for item in changed if item["weekday"] == error.get("weekday")]
-        return max(same_day, key=lambda item: _cost(item["_original"], _current(data, item)), default=None)
-    if error.get("exercise_id"):
-        matched = [item for item in changed if _current(data, item)["exercise_id"] == error["exercise_id"]]
-        return matched[0] if matched else None
-    if code == "recovery":
-        replaced = [item for item in changed if _current(data, item)["exercise_id"] != item["_original"]["exercise_id"]]
-        return (replaced or changed)[0]
+    latest_by_date = {s["date"]: s for s in sessions}
+    recent = sorted(latest_by_date.values(), key=lambda s: s["date"])[-2:]
+    weight = p.target_weight_kg
+
+    def outcome(session):
+        old = session.get("prescription")
+        if old and any(old[k] != getattr(p, k) for k in ("sets", "reps_min", "reps_max", "target_weight_kg")):
+            return "unknown"
+        sets = session["sets"]
+        if len(sets) != p.sets or {s["set_no"] for s in sets} != set(range(1, p.sets + 1)):
+            return "unknown"
+        if any(s["duration_seconds"] is not None for s in sets):
+            return "unknown"
+        if weight is not None and weight > 0 and any(s["weight_kg"] != weight for s in sets if s["completed"]):
+            return "unknown"
+        if all(s["completed"] and (s["reps"] or 0) >= p.reps_max for s in sets):
+            return "success"
+        if any(not s["completed"] or (s["reps"] is not None and s["reps"] < p.reps_min) for s in sets):
+            return "failure"
+        return "neutral"
+
+    outcomes = [outcome(s) for s in recent]
+    evidence = {"training_dates": [str(s["date"]) for s in recent], "outcomes": outcomes}
+    if len(outcomes) == 2 and outcomes == ["failure", "failure"]:
+        if weight is not None and weight > 0:
+            return {"kind": "deload", "changes": {"target_weight_kg": round(weight * .925, 3)},
+                    "reason": "连续两次训练未完成全部最低次数目标，下周降重 7.5%。", "evidence": evidence}
+        return None
+    if len(outcomes) == 2 and outcomes == ["success", "success"]:
+        muscles = set(doc.get("primary_muscles") or [])
+        if weight is not None and weight > 0 and doc.get("equipment") != "body only" and muscles:
+            increment = 5 if muscles <= LOWER_BODY else 2.5
+            if weight + increment <= 1000:
+                return {"kind": "increase_weight", "changes": {"target_weight_kg": weight + increment},
+                        "reason": f"连续两次完成全部组数并达到次数上限，下周加重 {increment:g} kg。", "evidence": evidence}
+        elif p.reps_max < 100:
+            return {"kind": "increase_reps", "changes": {"reps_min": p.reps_min + 1, "reps_max": p.reps_max + 1},
+                    "reason": "连续两次完成全部组数并达到次数上限；徒手或未设定负重，次数区间加 1。", "evidence": evidence}
+
+    # Three consecutive *completed* calendar weeks. Missing/partial weeks are not stagnation.
+    weeks = [completed_week_end - timedelta(weeks=i) for i in (3, 2, 1)]
+    weekly_best = defaultdict(float)
+    for session in sessions:
+        day = session["date"]
+        week = day - timedelta(days=day.weekday())
+        if week not in weeks or outcome(session) == "unknown":
+            continue
+        for entry in session["sets"]:
+            estimate = epley(entry["weight_kg"], entry["reps"], doc.get("equipment")) if entry["completed"] else None
+            if estimate:
+                weekly_best[week] = max(weekly_best[week], estimate)
+    if all(w in weekly_best for w in weeks):
+        values = [weekly_best[w] for w in weeks]
+        if values[1] <= values[0] + 1e-6 and values[2] <= max(values[:2]) + 1e-6:
+            return {"kind": "replace", "changes": {}, "reason": "连续三个完整周的最佳估算 1RM 没有提升，建议考虑同主要肌群、同器械的其他动作。",
+                    "evidence": {"weekly_estimated_1rm": [{"week_start": str(w), "kg": round(weekly_best[w], 2)} for w in weeks]}}
     return None
 
 
-def _cost(before: dict, after: dict) -> tuple:
-    return (
-        after["sets"] - before["sets"],
-        (after.get("duration_seconds") or 0) - (before.get("duration_seconds") or 0),
-        (after.get("reps_max") or 0) - (before.get("reps_max") or 0),
-        (after.get("target_weight_kg") or 0) - (before.get("target_weight_kg") or 0),
-    )
+async def suggest_next_week(user_id: str, plan_id: str | None = None, *, _history_guard: dict | None = None) -> dict:
+    source = await service.get_plan(user_id, plan_id) if plan_id else await service.active_plan(user_id)
+    if source is None:
+        raise service.TrainingError("请先激活一份训练计划", 404)
+    if source["status"] != "active":
+        raise service.TrainingError("只能根据当前使用中的计划生成下周建议", 409)
+    async with SessionLocal() as db:
+        row = await service.owned_plan(db, user_id, source["id"])
+        plan = PlanDraft.model_validate(row.draft)
+        root = row.root_id
+        # Include archived versions in this lineage; unrelated plans cannot drive progression.
+        day_rows = (await db.execute(select(PlanDay.id, WorkoutPlan.draft, PlanDay.weekday).join(WorkoutPlan, PlanDay.plan_id == WorkoutPlan.id)
+                                    .where(WorkoutPlan.user_id == user_id, WorkoutPlan.root_id == root))).all()
+        historical = {did: next(d for d in data["days"] if d["weekday"] == weekday) for did, data, weekday in day_rows}
+        tz = ZoneInfo(settings.timezone)
+        next_week = plan.week_start + timedelta(days=7)
+        now = datetime.now(timezone.utc)
+        end = min(now, datetime.combine(next_week, time.min, tzinfo=tz).astimezone(timezone.utc))
+        start = end - timedelta(days=28)
+        logs = (await db.scalars(select(WorkoutLog).where(WorkoutLog.user_id == user_id, WorkoutLog.performed_at >= start.replace(tzinfo=None),
+                                                        WorkoutLog.performed_at < end.replace(tzinfo=None))
+                                 .order_by(WorkoutLog.performed_at, WorkoutLog.id))).all()
+        entries = (await db.scalars(select(WorkoutSet).where(WorkoutSet.log_id.in_([log.id for log in logs])))).all() if logs else []
+    if _history_guard is not None:
+        _history_guard.update(start=start.replace(tzinfo=None), end=end.replace(tzinfo=None),
+                              records=[(log.id, log.content_hash, log.plan_day_id) for log in logs])
+    by_log = defaultdict(lambda: defaultdict(list))
+    for entry in entries:
+        by_log[entry.log_id][entry.exercise_id].append({k: getattr(entry, k) for k in ("set_no", "reps", "duration_seconds", "weight_kg", "completed")})
+    history = defaultdict(list)
+    for log in logs:
+        if log.plan_day_id and log.plan_day_id not in historical:
+            continue
+        day = historical.get(log.plan_day_id)
+        for eid, sets in by_log[log.id].items():
+            old = next((e for e in day["exercises"] if e["exercise_id"] == eid), None) if day else None
+            history[eid].append({"date": log.performed_at.replace(tzinfo=timezone.utc).astimezone(tz).date(), "sets": sets, "prescription": old})
+    profile, docs = await service.validation_inputs(user_id, plan)
+    proposed = plan.model_copy(deep=True)
+    proposed.week_start = next_week
+    local_end = end.astimezone(tz).date()
+    completed_week_end = local_end - timedelta(days=local_end.weekday())
+    adjustments, warnings = [], []
+    for day in proposed.days:
+        for position, exercise in enumerate(day.exercises):
+            doc = docs.get(exercise.exercise_id, {})
+            result = analyze_exercise(exercise, doc, history[exercise.exercise_id], completed_week_end)
+            if not result:
+                continue
+            item = {"weekday": day.weekday, "position": position, "exercise_id": exercise.exercise_id,
+                    "name": doc.get("name_zh") or doc.get("name") or exercise.exercise_id, **result, "candidates": []}
+            if result["kind"] == "replace" and doc.get("primary_muscles") and doc.get("equipment"):
+                filters = ExerciseFilter(primary_muscles=doc["primary_muscles"], equipment=[doc["equipment"]],
+                                         levels=[k for k, v in LEVEL_ORDER.items() if v <= LEVEL_ORDER.get(profile.get("experience_level"), 0) + 1],
+                                         categories=[doc["category"]], exclude_ids=[e.exercise_id for e in day.exercises])
+                try:
+                    hits = await get_retriever().search("", filters, 15)
+                    for hit in hits.hits:
+                        if not filters.matches(hit.doc):
+                            continue
+                        # Check the entire resulting week, including injury warnings and current equipment.
+                        candidate_plan = proposed.model_copy(deep=True)
+                        candidate = candidate_plan.days[proposed.days.index(day)].exercises[position]
+                        candidate.exercise_id = hit.doc.id
+                        candidate.target_weight_kg = None  # Loads do not transfer between different movements.
+                        candidate_docs = {**docs, hit.doc.id: {k: getattr(hit.doc, k) for k in ("id", "name", "name_zh", "equipment", "category", "level", "primary_muscles", "secondary_muscles")}}
+                        check = validate_plan(candidate_plan, profile, candidate_docs)
+                        if check["valid"] and not any(w["code"] == "injury_risk" and w.get("exercise_id") == hit.doc.id for w in check["warnings"]):
+                            item["candidates"].append({"exercise_id": hit.doc.id, "name": hit.doc.display_name})
+                        if len(item["candidates"]) == 3:
+                            break
+                except KnowledgeBaseNotReady:
+                    warnings.append("动作知识库尚未就绪，暂时无法检索替换候选；原动作保留。")
+                if not item["candidates"]:
+                    warnings.append(f"{item['name']}未找到通过校验的替换候选，保留原动作，可让教练进一步评估。")
+            for key, value in result["changes"].items():
+                setattr(exercise, key, value)
+            adjustments.append(item)
+    data = proposed.model_dump(mode="json")
+    validation = await service.check_plan(user_id, proposed)
+    result = {"source_plan_id": source["id"], "source_version": source["version"], "week_start": str(next_week),
+              "adjustments": adjustments, "proposed_plan": data, "validation": validation, "warnings": sorted(set(warnings)),
+              "notes": ["建议不会修改当前计划；确认后保存下周草稿，激活时旧计划归档。", "加减重仅比较当前处方及负重的最近两次训练（不同日期）；缺组或未知重量不视为失败。", "停滞按三个连续完整周的最佳估算1RM判断；仅使用1–10次自由负重完成组，缺周不判断。", "替换动作不沿用旧动作重量，请重新确定合适负重。"]}
+    result["suggestion_id"] = service.digest({"user_id": user_id, "source": source["id"], "result": result,
+                                              "history": [{"id": log.id, "hash": log.content_hash} for log in logs]})
+    return result
 
 
-def _current(data: dict, decision: dict) -> dict:
-    for day in data["days"]:
-        if day["weekday"] == decision["weekday"]:
-            return day["exercises"][decision["position"]]
-    raise KeyError(decision["weekday"])
-
-
-def _set_exercise(data: dict, weekday: int, position: int, exercise: dict) -> None:
-    for day in data["days"]:
-        if day["weekday"] == weekday:
-            day["exercises"][position] = exercise
-            return
-
-
-def _successful(sets: list[dict]) -> list[dict]:
-    return [entry for entry in sets if entry.get("completed", True)]
-
-
-def _hard(sets: list[dict]) -> bool:
-    return any(entry.get("rpe") is not None and entry["rpe"] >= HIGH_RPE for entry in sets)
-
-
-def _weights(sets: list[dict]) -> list[float] | None:
-    values = [entry.get("weight_kg") for entry in sets]
-    if any(value is None for value in values):
-        return None
-    return [float(value) for value in values]
-
-
-def _copy(prescription: dict) -> dict:
-    return {
-        "exercise_id": prescription["exercise_id"],
-        "sets": prescription["sets"],
-        "reps_min": prescription.get("reps_min"),
-        "reps_max": prescription.get("reps_max"),
-        "duration_seconds": prescription.get("duration_seconds"),
-        "rest_seconds": prescription.get("rest_seconds", 60),
-        "rpe": prescription.get("rpe"),
-        "target_weight_kg": prescription.get("target_weight_kg"),
-        "notes": prescription.get("notes") or "",
-    }
-
-
-def _view(prescription: dict) -> dict:
-    return {field: prescription.get(field) for field in VIEW_FIELDS}
-
-
-def _public_candidate(row: dict) -> dict:
-    return {key: row.get(key) for key in ("id", "name", "name_zh", "equipment", "level", "primary_muscles")}
-
-
-def _round_kg(value: float) -> float:
-    return round(value, 2)
-
-
-def _kg(value: float) -> str:
-    return f"{value:.2f}".rstrip("0").rstrip(".")
-
-
-def _kg_duration(seconds: int) -> str:
-    return f"{seconds} 秒"
+async def apply_next_week(user_id: str, plan_id: str, body: ApplyNextWeek) -> dict:
+    history_guard = {}
+    suggestion = await suggest_next_week(user_id, plan_id, _history_guard=history_guard)
+    if suggestion["suggestion_id"] != body.suggestion_id:
+        raise service.TrainingError("记录、档案或建议已变化，请重新查看并确认下周建议", 409)
+    plan = PlanDraft.model_validate(suggestion["proposed_plan"])
+    seen = set()
+    for choice in body.replacements:
+        key = (choice.weekday, choice.position)
+        if key in seen:
+            raise service.TrainingError("同一位置不能重复替换", 422)
+        seen.add(key)
+        item = next((a for a in suggestion["adjustments"] if (a["weekday"], a["position"]) == key and a["kind"] == "replace"), None)
+        if item is None or choice.exercise_id not in {c["exercise_id"] for c in item["candidates"]}:
+            raise service.TrainingError("请选择本次建议中的替换候选", 422)
+        day = next(d for d in plan.days if d.weekday == choice.weekday)
+        day.exercises[choice.position].exercise_id = choice.exercise_id
+        day.exercises[choice.position].target_weight_kg = None
+    plan = PlanDraft.model_validate(plan.model_dump())
+    return await service.save_plan(user_id, plan, parent_id=plan_id, require_active_parent=True, expected_history=history_guard)

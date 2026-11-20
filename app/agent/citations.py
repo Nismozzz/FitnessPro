@@ -9,7 +9,7 @@ from typing import Any
 from app.llm.tokens import estimate_tokens
 
 MARKER = re.compile(r"\[(E[A-Za-z0-9_]+)\]")
-KNOWLEDGE_TOOLS = {"search_exercises", "get_exercise_detail", "search_knowledge_articles"}
+KNOWLEDGE_TOOLS = {"search_exercises", "get_exercise_detail", "search_knowledge_articles", "search_meals"}
 FIELDS = {
     "name": "英文名称", "name_zh": "中文名称", "equipment": "器械",
     "level": "难度", "primary_muscles": "主要肌群", "secondary_muscles": "次要肌群",
@@ -29,6 +29,8 @@ class EvidenceRegistry:
     def tool_content(self, data: dict, max_tokens: int) -> str:
         if "articles" in data:
             return self.article_content(data, max_tokens)
+        if "meals" in data:
+            return self.meal_content(data, max_tokens)
         # 按完整字段/步骤准入，永不截断 JSON 或证据原文。
         payload = {"ok": True, "data": {k: v for k, v in data.items() if k != "exercises"}}
         payload["data"].update(exercises=[], evidence=[], evidence_note="事实后引用 [证据id]；未返回的字段不可补写。")
@@ -92,6 +94,37 @@ class EvidenceRegistry:
             for key in admitted:
                 self.evidence.pop(key, None)
             return encode({"ok": True, "data": {"exercises": [], "evidence": []}})
+        return encode(payload)
+
+    def meal_content(self, data: dict, max_tokens: int) -> str:
+        payload = {"ok": True, "data": {"meals": [], "evidence": [],
+                   "warnings": data.get("warnings", []), "notice": data.get("notice", ""),
+                   "evidence_note": "菜谱字段引用 [证据id]；未返回的字段不可补写。"}}
+        output = payload["data"]
+        fields = (("name", "菜名"), ("category", "分类"), ("kcal", "热量"),
+                  ("nutrition", "营养素"), ("per100g", "每100克营养素"),
+                  ("servingSize", "份量"), ("mealType", "餐次"),
+                  ("ingredients", "食材"), ("steps", "步骤"))
+        for meal in data.get("meals", []):
+            row = {"id": meal["id"]}
+            for field, label in fields:
+                value = meal.get(field)
+                if value in (None, "", [], {}):
+                    continue
+                evidence_id = f"E{self.prefix}_{len(self.evidence) + 1}"
+                snapshot = {"id": evidence_id, "source_type": "meal", "meal_id": meal["id"],
+                            "title": meal.get("name", meal["id"]), "field": field,
+                            "label": label, "text": json.dumps(value, ensure_ascii=False),
+                            "language": "zh"}
+                row[field] = value
+                output["evidence"].append(snapshot)
+                if estimate_tokens(encode(payload)) > max_tokens:
+                    output["evidence"].pop(); del row[field]
+                    break
+                self.evidence[evidence_id] = snapshot
+            if len(row) > 1:
+                row["evidence_ids"] = [e["id"] for e in output["evidence"] if e["meal_id"] == meal["id"]]
+                output["meals"].append(row)
         return encode(payload)
 
     def article_content(self, data: dict, max_tokens: int) -> str:

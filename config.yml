@@ -164,3 +164,7 @@ knowledge:
   raw_dir: data/knowledge/raw
   index_dir: data/knowledge/index
   chunk_size: 900
+
+nutrition:
+  source_file: meals.json
+  index_dir: data/nutrition/index

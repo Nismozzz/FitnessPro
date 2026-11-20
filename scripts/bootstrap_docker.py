@@ -12,6 +12,7 @@ from app.database.session import SessionLocal, engine
 from app.utils.background import drain
 from scripts.ingest_exercises import main as ingest_exercises
 from scripts.ingest_knowledge import ingest as ingest_knowledge
+from scripts.ingest_meals import ingest as ingest_meals
 
 
 async def main():
@@ -65,6 +66,13 @@ async def main():
             await asyncio.to_thread(publish_store, index, 'articles')
         elif settings.vector_store.type == 'qdrant':
             await ingest_knowledge(raw, index, chunk_size=settings.knowledge.chunk_size)
+        meal_index = resolve_path(settings.nutrition.index_dir)
+        if not (meal_index / 'manifest.json').exists():
+            logging.info('建立营养菜谱向量索引')
+            await ingest_meals(resolve_path(settings.nutrition.source_file), meal_index)
+        elif (meal_index / 'vectors.npy').exists():
+            from app.rag.storage import publish_store
+            await asyncio.to_thread(publish_store, meal_index, 'meals')
         logging.info('知识库初始化完成')
     finally:
         await drain()

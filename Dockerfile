@@ -18,6 +18,7 @@ COPY migrations ./migrations
 COPY alembic.ini config.yml ./
 COPY data/knowledge/raw /opt/fitnesspro/knowledge/raw
 COPY data/knowledge/sources.json /opt/fitnesspro/knowledge/sources.json
+COPY meals.json ./meals.json
 RUN mkdir -p /app/data && chown fitnesspro:fitnesspro /app/data
 USER fitnesspro
 EXPOSE 8000

@@ -224,6 +224,11 @@ class KnowledgeSettings(BaseModel):
     chunk_size: int = Field(default=900, ge=100, le=2000)
 
 
+class NutritionSettings(BaseModel):
+    source_file: str = "meals.json"
+    index_dir: str = "data/nutrition/index"
+
+
 class VectorStoreSettings(BaseModel):
     type: Literal["local", "qdrant"] = "local"
     url: str = "http://localhost:6333"
@@ -248,6 +253,7 @@ class Settings(BaseModel):
     observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)
     evaluation: EvaluationSettings = Field(default_factory=EvaluationSettings)
     knowledge: KnowledgeSettings = Field(default_factory=KnowledgeSettings)
+    nutrition: NutritionSettings = Field(default_factory=NutritionSettings)
     data: DataSettings = Field(default_factory=DataSettings)
     auth: AuthSettings = Field(default_factory=AuthSettings)
 

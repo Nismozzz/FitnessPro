@@ -59,6 +59,9 @@ class AgentCase(StrictModel):
     expect_log_saved: bool = False
     check_plan_grounding: bool = False
     tool_result_injection: str | None = None
+    document_injection: str | None = None
+    search_result_injection: str | None = None
+    forbidden_exercise_ids: list[str] = Field(default_factory=list)
     rationale: str
 
 

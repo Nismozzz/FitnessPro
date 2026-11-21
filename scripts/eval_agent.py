@@ -48,6 +48,10 @@ def validate_cases(cases, catalog):
             raise ValueError(f'{case.id}: required tool is also forbidden')
         for pattern in case.required_patterns + case.forbidden_patterns:
             re.compile(pattern)
+        if case.document_injection and 'Dumbbell_Bench_Press' not in ids:
+            raise ValueError(f'{case.id}: missing document injection fixture Dumbbell_Bench_Press')
+        if set(case.forbidden_exercise_ids) - ids:
+            raise ValueError(f'{case.id}: forbidden exercise not in catalog')
         if case.fixture in {'plan', 'logs'} and 'Dumbbell_Bench_Press' not in ids:
             raise ValueError(f'{case.id}: missing fixture exercise Dumbbell_Bench_Press')
     if not catalog:
@@ -87,7 +91,7 @@ def run(args):
             raise ValueError('unknown case id')
     if args.limit:
         cases = cases[:args.limit]
-    catalog = asyncio.run(export_catalog())
+    catalog = json.loads(args.catalog.read_text(encoding='utf-8')) if args.catalog else asyncio.run(export_catalog())
     validate_cases(cases, catalog)
     if args.validate_only:
         print(f'Validated {len(cases)} agent cases and fixtures; no API calls or source database writes.')
@@ -149,6 +153,7 @@ def run(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--cases', type=Path, default=ROOT / 'eval/agent_cases.jsonl')
+    parser.add_argument('--catalog', type=Path, help='Use a fixture exercise catalog instead of reading the source database')
     parser.add_argument('--output', type=Path, default=ROOT / 'eval/results/agent')
     parser.add_argument('--case-id', action='append')
     parser.add_argument('--limit', type=int)

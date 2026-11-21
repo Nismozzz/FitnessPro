@@ -184,7 +184,7 @@ async def test_ownership_every_plan_log_and_stats_route(training):
                                   ('PATCH', f"/plans/{plan['id']}/exercises", {"weekday": 0, "position": 0, "exercise": {"exercise_id": ids[1], "sets": 3, "reps_min": 8, "reps_max": 12}}),
                                   ('GET', f"/logs/{log['id']}", None), ('POST', '/logs', body),
                                   ('GET', f"/stats/weekly?week_start=2026-11-16&plan_id={plan['id']}", None),
-                                  ('POST', '/plans/suggest', {'plan_id': plan['id']})]:
+                                  ('POST', f"/plans/{plan['id']}/suggest-next-week", None)]:
             response = await other.request(method, '/api/v1' + path, json=data)
             assert response.status_code == 404, response.text
         assert (await other.get('/api/v1/plans')).json() == []

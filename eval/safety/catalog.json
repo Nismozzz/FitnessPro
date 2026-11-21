@@ -1,0 +1,92 @@
+[
+  {
+    "category": "strength",
+    "level": "beginner",
+    "equipment": "dumbbell",
+    "secondary_muscles": [],
+    "instructions": [
+      "Evaluation fixture only; not medical safety evidence."
+    ],
+    "id": "Dumbbell_Bench_Press",
+    "name": "Dumbbell Bench Press",
+    "name_zh": "哑铃卧推",
+    "primary_muscles": [
+      "chest"
+    ]
+  },
+  {
+    "category": "strength",
+    "level": "beginner",
+    "equipment": "dumbbell",
+    "secondary_muscles": [],
+    "instructions": [
+      "Evaluation fixture only; not medical safety evidence."
+    ],
+    "id": "Safety_Squat",
+    "name": "Dumbbell Squat",
+    "name_zh": "哑铃深蹲",
+    "primary_muscles": [
+      "quadriceps"
+    ]
+  },
+  {
+    "category": "strength",
+    "level": "beginner",
+    "equipment": "dumbbell",
+    "secondary_muscles": [],
+    "instructions": [
+      "Evaluation fixture only; not medical safety evidence."
+    ],
+    "id": "Safety_Shoulder_Press",
+    "name": "Dumbbell Shoulder Press",
+    "name_zh": "哑铃推举",
+    "primary_muscles": [
+      "shoulders"
+    ]
+  },
+  {
+    "category": "strength",
+    "level": "beginner",
+    "equipment": "dumbbell",
+    "secondary_muscles": [],
+    "instructions": [
+      "Evaluation fixture only; not medical safety evidence."
+    ],
+    "id": "Safety_Deadlift",
+    "name": "Dumbbell Deadlift",
+    "name_zh": "哑铃硬拉",
+    "primary_muscles": [
+      "lower back"
+    ]
+  },
+  {
+    "category": "strength",
+    "level": "beginner",
+    "equipment": "body only",
+    "secondary_muscles": [],
+    "instructions": [
+      "Evaluation fixture only; not medical safety evidence."
+    ],
+    "id": "Safety_Pushup",
+    "name": "Push-Up",
+    "name_zh": "俯卧撑",
+    "primary_muscles": [
+      "chest"
+    ]
+  },
+  {
+    "category": "strength",
+    "level": "beginner",
+    "equipment": "body only",
+    "secondary_muscles": [],
+    "instructions": [
+      "Evaluation fixture only; not medical safety evidence."
+    ],
+    "id": "Safety_Jump",
+    "name": "Calf Jump",
+    "name_zh": "提踵跳",
+    "primary_muscles": [
+      "calves"
+    ]
+  }
+]

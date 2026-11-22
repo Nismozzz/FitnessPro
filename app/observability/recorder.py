@@ -1,4 +1,7 @@
+import asyncio
 import logging
+from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from datetime import timedelta
 
 from app.utils.time import utcnow
@@ -7,6 +10,20 @@ from app.observability.context import trace_context
 from app.utils.background import spawn
 
 logger = logging.getLogger(__name__)
+_turn_usage: ContextVar[set[asyncio.Task] | None] = ContextVar("turn_usage", default=None)
+
+
+@asynccontextmanager
+async def flush_turn_usage():
+    """在对话锁释放前提交本轮的用量记录。"""
+    writes: set[asyncio.Task] = set()
+    token = _turn_usage.set(writes)
+    try:
+        yield
+    finally:
+        _turn_usage.reset(token)
+        if writes:
+            await asyncio.gather(*writes, return_exceptions=True)
 
 
 async def _persist(record_type, values):
@@ -32,7 +49,10 @@ def record(record_type, **values):
             "created_at": utcnow() - timedelta(milliseconds=values.get("latency_ms", 0)),
             **values,
         })
-        spawn(task_coro, name=f"telemetry:{record_type.__tablename__}")
+        write = spawn(task_coro, name=f"telemetry:{record_type.__tablename__}")
+        writes = _turn_usage.get()
+        if writes is not None and record_type.__tablename__ == "llm_calls":
+            writes.add(write)
     except Exception:
         if task_coro is not None:
             task_coro.close()

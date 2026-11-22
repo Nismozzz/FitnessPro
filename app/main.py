@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from contextlib import asynccontextmanager
 
 from pathlib import Path
@@ -12,6 +13,10 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from app.training.service import TrainingError
 from fastapi.middleware.cors import CORSMiddleware
+from redis.asyncio import Redis
+from redis.asyncio.retry import Retry
+from redis.backoff import NoBackoff
+from redis.exceptions import RedisError
 
 from app.api import agent, auth, evaluations, knowledge, memories, settings as provider_settings, users, training, observability, images
 from app.config import bundle_root, settings
@@ -21,22 +26,39 @@ from app.knowledge.retriever import init_article_retriever
 from app.nutrition.retriever import init_meal_retriever
 from app.utils.background import drain
 from app.observability.middleware import RequestTraceMiddleware
+from app.request_limits import RequestLimits
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
 
 @asynccontextmanager
-async def lifespan(_app: FastAPI):
-    await init_db()
-    await init_retriever()
-    init_article_retriever()
-    init_meal_retriever()
-    yield
-    await drain()
-    await engine.dispose()
+async def lifespan(app: FastAPI):
+    url = os.getenv("REDIS_URL")
+    client = None
+    if url:
+        client = Redis.from_url(url, socket_connect_timeout=2, socket_timeout=2, retry=Retry(NoBackoff(), 0))
+    limits = RequestLimits(client)
+    previous_limits = app.state.request_limits
+    app.state.request_limits = limits
+    try:
+        if client is not None:
+            await client.ping()
+        await init_db()
+        await init_retriever()
+        init_article_retriever()
+        init_meal_retriever()
+        try:
+            yield
+        finally:
+            await drain()
+    finally:
+        app.state.request_limits = previous_limits
+        await limits.close()
+        await engine.dispose()
 
 
 app = FastAPI(title="FitnessPro", version="0.1.0", lifespan=lifespan)
+app.state.request_limits = RequestLimits()
 app.add_middleware(RequestTraceMiddleware)
 app.add_middleware(
     CORSMiddleware,
@@ -44,7 +66,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
-    expose_headers=["X-Request-ID"],
+    expose_headers=["X-Request-ID", "Retry-After"],
 )
 
 api = APIRouter(prefix="/api/v1")
@@ -56,6 +78,12 @@ app.include_router(api)
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.exception_handler(RedisError)
+async def redis_error(_request, exc: RedisError):
+    logging.getLogger(__name__).warning("Redis 请求失败", exc_info=exc)
+    return JSONResponse(status_code=503, content={"detail": "限流服务暂不可用，请稍后再试"})
 
 
 @app.exception_handler(TrainingError)

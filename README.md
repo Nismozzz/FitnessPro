@@ -34,12 +34,14 @@ FitnessPro 是面向健身人群的 AI 训练管理平台。用户可以通过�
 - **规则校验与计划版本化**：用代码检查计划约束；调整建议经确认后保存为新版本，保留历史计划与训练记录。
 - **独立视觉模型**：图片识别与文本对话分别配置模型，当前视觉模型使用 DeepSeek Flash 并复用快速模型密钥。
 - **执行追踪与质量评估**：记录 LLM、检索与工具调用，提供运行监控、离线评测与可选的 RAGAS 在线评估。
-- **容器化部署**：Docker Compose 编排前后端、PostgreSQL、Qdrant、数据库迁移与首次入库任务。
+- **请求限流与并发控制**：Redis 共享对话锁、请求计数和登录失败计数，发起对话前按用户检查 LLM Token 日预算。
+- **容器化部署**：Docker Compose 编排前后端、PostgreSQL、Qdrant、Redis、数据库迁移与首次入库任务。
 
 | 层级 | 技术 |
 | --- | --- |
 | 后端 | Python 3.12+、FastAPI、Pydantic 2 |
 | 数据持久化 | SQLAlchemy 2 异步 ORM、Alembic、PostgreSQL / SQLite |
+| 限流与并发 | Redis、redis.asyncio |
 | 模型接入 | OpenAI 兼容接口，独立配置 fast / normal / vision |
 | 知识检索 | Qdrant、BAAI/bge-m3、BM25、jieba、RRF、bge-reranker |
 | 前端 | React 19、TypeScript、Vite 7、Recharts、react-markdown |
@@ -88,7 +90,7 @@ FitnessPro 是面向健身人群的 AI 训练管理平台。用户可以通过�
 - **关键词召回**：使用 jieba 分词与 BM25 补充动作名称、器械等精确匹配。
 - **重排序**：使用 bge-reranker 对融合后的候选进一步排序。
 - **降级处理**：向量检索或重排不可用时提供降级结果与提示。
-- **查询缓存**：动作检索器使用进程内 LRU 缓存查询向量；当前未引入 Redis。
+- **查询缓存**：动作检索器使用进程内 LRU 缓存查询向量。
 - **索引发布**：动作与文献分别使用 Qdrant 集合和别名，完整写入并核对后切换版本。
 
 ### 6. 器械图片识别
@@ -122,8 +124,15 @@ FitnessPro 是面向健身人群的 AI 训练管理平台。用户可以通过�
 - 注册与登录使用密码哈希和 JWT 鉴权。
 - 会话、档案、记忆、计划、训练记录及图片按用户隔离。
 - API Key、JWT 密钥和数据库密码通过环境变量管理。
-- Docker 默认仅发布前端 HTTP 端口，PostgreSQL 与 Qdrant 位于内部网络。
+- Docker 默认仅发布前端 HTTP 端口，PostgreSQL、Qdrant 与 Redis 位于内部网络。
 - 数据库结构由 Alembic 管理；已有无版本数据库通过显式检查与接管流程迁移。
+
+### 10. 限流与并发控制
+
+- **对话并发**：同一用户跨会话同时只能执行一轮对话。第二个并发请求返回 429。完成、出错或取消后释放对话锁，异常退出时由 Redis TTL 回收。
+- **请求限流**：对话接口默认每用户每个固定 60 秒窗口允许 10 次请求。超过时返回 429 和 `Retry-After`。
+- **Token 日预算**：对话开始前，按 UTC 日期查询该用户已记录的输入与输出 Token。达到默认 100,000 Token 后返回 429，并提示次日 00:00 UTC 重置。已开始的对话可以完成。
+- **登录防护**：同一客户端 IP 与用户名在 15 分钟内累计 5 次失败时，锁定该组合 15 分钟并返回 423 和 `Retry-After`。锁定前登录成功会清空失败记录。
 
 ## 快速开始
 
@@ -161,7 +170,7 @@ docker compose up -d --build
 docker compose logs -f migrate ingest backend
 ```
 
-Compose 会启动 PostgreSQL、Qdrant、数据库迁移任务、首次入库任务、FastAPI 后端及 Nginx 前端。首次下载动作、翻译和生成向量可能耗时较长并产生 API 费用，已有完整数据时跳过相应入库步骤。`migrate` 与 `ingest` 完成后显示 `Exited (0)` 为正常状态。
+Compose 会启动 PostgreSQL、Qdrant、Redis、数据库迁移任务、首次入库任务、FastAPI 后端及 Nginx 前端。首次下载动作、翻译和生成向量可能耗时较长并产生 API 费用，已有完整数据时跳过相应入库步骤。`migrate` 与 `ingest` 完成后显示 `Exited (0)` 为正常状态。
 
 **4. 访问应用**
 
@@ -188,6 +197,8 @@ cp .env.example .env
 填写 `.env` 中的模型密钥与 `JWT_SECRET`。也可以登录后在侧栏「连接设置」填写，密钥保存在本机，页面只显示末四位。默认业务数据库为 SQLite。当前 `config.yml` 的 Qdrant 主机名用于 Docker 网络；本地开发可将 `vector_store.type` 改为 `local`，使用本地向量索引，或将 `vector_store.url` 改为本机可访问的 Qdrant 地址。
 
 给别人直接安装时，在项目根目录执行 `powershell -ExecutionPolicy Bypass -File scripts\build_installer.ps1`，生成 `release/FitnessPro-Setup.exe`。安装版的数据库和密钥写在 `%LOCALAPPDATA%\FitnessPro`。
+
+本地和桌面安装版默认使用进程内锁与计数器。需要验证共享状态时，先启动 Redis 并在 `.env` 设置 `REDIS_URL=redis://localhost:6379/0`。配置 Redis 后，运行期间连接故障时受保护的请求返回 503。
 
 **2. 初始化知识库并启动后端**
 
@@ -228,6 +239,8 @@ npm test
 npm run build
 ```
 
+阶段 E1 的接口回归默认使用进程内存储。将 `E1_TEST_REDIS_URL` 指向测试 Redis 实例或数据库后，运行 `pytest tests/test_request_limits.py tests/test_cancellation.py` 可追加 Redis 接口和跨客户端回归。
+
 也可在项目根目录执行 `python -m scripts.chat_cli`，通过命令行调试对话，无需启动 HTTP 服务。
 
 安全回归覆盖用户输入、检索文档及搜索结果三类提示注入，以及膝、肩、腰、腕、踝伤病约束和就医提示。`pytest tests/test_safety.py tests/test_web_search.py` 验证权限边界、真实工具数据通路与评分反例；11 条真实模型评测的运行方式见 [安全回归评测](eval/PROTOCOL.md#安全回归评测)。离线测试通过不代表真实模型已通过安全评测。
@@ -247,6 +260,7 @@ npm run build
 | `JWT_SECRET` | 登录令牌签名密钥 |
 | `POSTGRES_PASSWORD` | Docker 首次初始化 PostgreSQL 的密码 |
 | `HTTP_PORT` | 可选，Docker 前端端口，默认 80 |
+| `REDIS_URL` | 可选，本地 Redis 连接地址，Compose 默认使用 `redis://redis:6379/0` |
 | `DATABASE_URL` | 可选，覆盖本地配置的业务数据库连接；Compose 已指定内部 PostgreSQL 连接 |
 | `DEEPSEEK_SEARCH_API_KEY` | 当前配置的联网搜索密钥，可填写同一 DeepSeek Key；或将 `web_search.api_key_env` 改为 `LLM_API_KEY` 直接复用 |
 
@@ -254,7 +268,7 @@ npm run build
 
 ### 2. 主配置文件（config.yml）
 
-[config.yml](config.yml) 保存模型、检索、上下文、图片、评估与超时等非敏感参数。
+[config.yml](config.yml) 保存模型、检索、上下文、图片、评估、超时与限流等非敏感参数。
 
 | 配置项 | 当前用途与默认设置 |
 | --- | --- |
@@ -268,6 +282,7 @@ npm run build
 | `context` | 历史 Token 预算、压缩阈值、近期轮数及工具结果预算 |
 | `memory` | 自动候选提取、临时记忆 TTL 与上下文注入数量 |
 | `agent` | 最大迭代次数、工具超时、整轮超时与最终回答预留时间 |
+| `limits` | 对话频率 `chat_requests: 10` / `chat_window_seconds: 60`，日预算 `daily_llm_tokens: 100000`，登录阈值 `login_failures: 5` / `login_window_seconds: 900` |
 | `knowledge` | 文献原始资料、索引路径及分块大小 |
 | `web_search` | DeepSeek 联网搜索开关、密钥环境变量名与超时 |
 | `evaluation` | 可选 RAGAS 在线评估，默认关闭 |
@@ -293,6 +308,7 @@ app/
   memory/          候选记忆提取与管理
   observability/   请求追踪、调用记录与统计
   rag/             动作混合检索与 Qdrant 存储
+  request_limits.py  对话锁、请求计数与登录失败记录
   training/        计划校验、训练记录、统计与渐进调整
   users/           用户档案
   vision/          图片处理与器械识别
@@ -306,7 +322,7 @@ compose.yaml       服务编排
 config.yml         非敏感配置
 ```
 
-Docker 使用 `postgres_data` 保存业务数据、`qdrant_data` 保存向量数据、`app_data` 保存原始资料、索引文件及器械图片。停止或重建容器会保留命名卷；`docker compose down -v` 会删除这些卷。
+Docker 使用 `postgres_data` 保存业务数据、`qdrant_data` 保存向量数据、`app_data` 保存原始资料、索引文件及器械图片，`redis_data` 保存带过期时间的锁与计数。停止或重建容器会保留命名卷；`docker compose down -v` 会删除这些卷。
 
 ## 未来规划
 
@@ -323,7 +339,8 @@ Docker 使用 `postgres_data` 保存业务数据、`qdrant_data` 保存向量数
 - [x] Docker Compose 部署、Alembic 迁移与 Qdrant 持久化
 - [ ] 增加未引用图片的过期清理与保留策略
 - [x] 完善提示注入、伤病约束等场景的测试覆盖
-- [ ] 按部署需求引入持久化后台任务与跨进程会话协调
+- [x] 阶段 E1 的对话并发控制、请求限流、Token 日预算与登录锁定
+- [ ] 将取消任务注册表与后台任务迁移到共享存储
 
 
-当前会话锁、取消任务注册表及后台任务均位于进程内，部署保持单 worker；进程重启后未完成的摘要、记忆提取等后台任务不会自动恢复。
+取消任务注册表及后台任务仍位于进程内，部署保持单 worker。进程重启后，未完成的摘要、记忆提取等后台任务需要后续请求重新触发。

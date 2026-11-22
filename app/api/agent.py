@@ -1,23 +1,30 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
 from dataclasses import asdict
+from datetime import timedelta
 from typing import Any
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.observability.context import trace_scope
-from uuid import uuid4
+from app.observability.service import get_today_tokens
 
+from app.api.deps import get_request_limits, rate_limit
 from app.agent.service import SessionNotFound, agent_service
 from app.agent.types import AgentEvent
 from app.agent.citations import history_citations
 from app.auth.security import get_current_user_id
+from app.config import settings
 from app.llm.provider import Tier
 from app.conversation import repository as repo
+from app.request_limits import PREFLIGHT_TIMEOUT, RequestLimits
+from app.utils.time import utcnow
 from app.vision.images import IMAGE_MARKER, image_path, require_images
 
 router = APIRouter(prefix="/agent", tags=["agent"])
@@ -41,8 +48,12 @@ async def list_tools(user_id: str = Depends(get_current_user_id)) -> list[dict[s
     return agent_service.tool_catalog()
 
 
-@router.post("/chat")
-async def chat(body: ChatRequest, user_id: str = Depends(get_current_user_id)) -> StreamingResponse:
+@router.post("/chat", dependencies=[Depends(rate_limit)])
+async def chat(
+    body: ChatRequest,
+    user_id: str = Depends(get_current_user_id),
+    limits: RequestLimits = Depends(get_request_limits),
+) -> StreamingResponse:
     """SSE 流式对话。事件：session / context / content_reset / content / tool_call / tool_result / citations / error / done。"""
     try:
         agent_service.select_tools(body.selected_tools)
@@ -59,16 +70,31 @@ async def chat(body: ChatRequest, user_id: str = Depends(get_current_user_id)) -
         except FileNotFoundError:
             raise HTTPException(404, "图片不存在或已删除，请重新上传")
     message = body.message + "".join(f"\n[图片附件：{image_id}]" for image_id in body.image_ids)
+    lease = await limits.acquire_turn(user_id, settings.agent.total_timeout)
+    if lease is None:
+        raise HTTPException(429, "请等待当前对话完成")
+
+    handed_off = False
     try:
-        session_id = await agent_service.prepare_session(user_id, body.session_id, body.message)
+        async with asyncio.timeout(PREFLIGHT_TIMEOUT):
+            if await get_today_tokens(user_id) >= settings.limits.daily_llm_tokens:
+                tomorrow = utcnow().replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+                raise HTTPException(429, f"今日模型 Token 预算已用完，将于 {tomorrow:%Y-%m-%d %H:%M} UTC 重置")
+            session_id = await agent_service.prepare_session(user_id, body.session_id, body.message)
+        request_id = uuid4().hex
+        with trace_scope(request_id=request_id, user_id=user_id, session_id=session_id):
+            queue = agent_service.start_turn(
+                user_id=user_id, session_id=session_id, message=message, model_tier=body.model_tier,
+                selected_tools=body.selected_tools, lease=lease,
+            )
+        handed_off = True
     except SessionNotFound:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "会话不存在")
-
-    request_id = uuid4().hex
-    with trace_scope(request_id=request_id, user_id=user_id, session_id=session_id):
-        queue = agent_service.start_turn(
-            user_id=user_id, session_id=session_id, message=message, model_tier=body.model_tier, selected_tools=body.selected_tools
-        )
+    except TimeoutError:
+        raise HTTPException(503, "对话初始化超时，请稍后再试")
+    finally:
+        if not handed_off:
+            await lease.release()
 
     async def stream() -> AsyncIterator[str]:
         while True:

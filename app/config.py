@@ -136,8 +136,16 @@ class MemorySettings(BaseModel):
 class AgentSettings(BaseModel):
     max_iterations: int = 12
     tool_timeout: float = 30.0
-    total_timeout: float = 600.0
+    total_timeout: float = Field(default=600.0, gt=0, allow_inf_nan=False)
     final_answer_reserve: float = 60.0
+
+
+class LimitSettings(BaseModel):
+    chat_requests: int = Field(default=10, gt=0)
+    chat_window_seconds: int = Field(default=60, gt=0)
+    daily_llm_tokens: int = Field(default=100_000, gt=0)
+    login_failures: int = Field(default=5, gt=0)
+    login_window_seconds: int = Field(default=900, gt=0)
 
 
 class EvaluationSettings(BaseModel):
@@ -250,6 +258,7 @@ class Settings(BaseModel):
     memory: MemorySettings = Field(default_factory=MemorySettings)
     web_search: WebSearchSettings = Field(default_factory=WebSearchSettings)
     agent: AgentSettings = Field(default_factory=AgentSettings)
+    limits: LimitSettings = Field(default_factory=LimitSettings)
     observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)
     evaluation: EvaluationSettings = Field(default_factory=EvaluationSettings)
     knowledge: KnowledgeSettings = Field(default_factory=KnowledgeSettings)

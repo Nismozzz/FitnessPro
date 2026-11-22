@@ -15,6 +15,7 @@ sqlalchemy[asyncio]>=2.0.30
 aiosqlite>=0.20
 asyncpg>=0.29
 alembic>=1.13,<2
+redis>=5,<8
 
 # 模型调用（OpenAI 兼容接口：DeepSeek / SiliconFlow / 通义等）
 openai>=1.40

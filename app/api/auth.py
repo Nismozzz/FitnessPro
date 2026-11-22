@@ -1,12 +1,15 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 
+from app.api.deps import get_request_limits
 from app.auth.security import create_access_token, hash_password, verify_password
+from app.config import settings
 from app.database.models import User, UserProfile
 from app.database.session import SessionLocal
+from app.request_limits import RequestLimits
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -47,11 +50,28 @@ async def register(body: Credentials) -> TokenResponse:
 
 
 @router.post("/login", response_model=TokenResponse)
-async def login(body: Credentials) -> TokenResponse:
+async def login(
+    body: Credentials, request: Request, limits: RequestLimits = Depends(get_request_limits),
+) -> TokenResponse:
+    config = settings.limits
+    client_ip = request.client.host if request.client else "unknown"
+    limit_args = (client_ip, body.username, config.login_failures, config.login_window_seconds)
+    retry = await limits.login_retry_after(*limit_args)
+    if retry:
+        raise _login_locked(retry)
+
     async with SessionLocal() as db:
         user = (
             await db.execute(select(User).where(User.username == body.username))
         ).scalar_one_or_none()
-    if user is None or not await verify_password(body.password, user.password_hash):
+    valid = user is not None and await verify_password(body.password, user.password_hash)
+    retry = await limits.login_retry_after(*limit_args, action="success" if valid else "failure")
+    if retry:
+        raise _login_locked(retry)
+    if not valid:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "用户名或密码错误")
     return TokenResponse(access_token=create_access_token(user.id), user_id=user.id)
+
+
+def _login_locked(retry: int) -> HTTPException:
+    return HTTPException(423, f"账号已锁定，请 {retry} 秒后重试", headers={"Retry-After": str(retry)})

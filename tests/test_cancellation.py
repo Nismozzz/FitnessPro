@@ -83,17 +83,19 @@ async def test_cancel_interrupts_work_and_does_not_continue(db, monkeypatch, tar
     await drain()
 
 
-async def test_cancel_before_start_and_while_waiting_for_session_lock(db):
+async def test_cancel_before_start_releases_lease(db):
+    from app.request_limits import RequestLimits
+
     service = AgentService()
     uid = await make_user()
     sid = await service.prepare_session(uid, None, "制定计划")
-    async with service._lock(sid):
-        for queued in (False, True):
-            queue = service.start_turn(user_id=uid, session_id=sid, message="制定计划")
-            rid = (await queue.get()).data["request_id"]
-            if queued:
-                await asyncio.sleep(0)
-            assert await service.cancel_turn(uid, rid)
-            assert (await queue.get()).data["status"] == "cancelled"
-            assert await queue.get() is None
+    limits = RequestLimits()
+    lease = await limits.acquire_turn(uid, settings.agent.total_timeout)
+    queue = service.start_turn(user_id=uid, session_id=sid, message="制定计划", lease=lease)
+    rid = (await queue.get()).data["request_id"]
+    assert await service.cancel_turn(uid, rid)
+    assert (await queue.get()).data["status"] == "cancelled"
+    assert await queue.get() is None
+    assert await limits.acquire_turn(uid, settings.agent.total_timeout) is not None
     assert not await repo.load_messages(sid)
+    await limits.close()

@@ -116,6 +116,13 @@ agent:
   total_timeout: 600
   final_answer_reserve: 60       # 剩余预算不足时停止新增工具调用，给出已有结果
 
+limits:
+  chat_requests: 10
+  chat_window_seconds: 60
+  daily_llm_tokens: 100000
+  login_failures: 5
+  login_window_seconds: 900
+
 # -----------------------------------------------------------------------------
 # RAGAS 在线评估（后台异步，不阻塞对话；需要 pip install ragas）
 # 只评估本轮调用过动作/文献库检索工具的回答；无参考答案，仅支持 faithfulness / answer_relevancy

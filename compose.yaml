@@ -4,7 +4,7 @@ x-backend: &backend
   image: fitnesspro-backend:local
   build: .
   env_file: .env
-  environment:
+  environment: &backend-env
     DATABASE_URL: postgresql+asyncpg://fitnesspro:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/fitnesspro
     JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in .env}
   volumes:
@@ -12,6 +12,18 @@ x-backend: &backend
     - ./config.yml:/app/config.yml:ro
 
 services:
+  redis:
+    image: redis:7-alpine
+    command: [redis-server, --appendonly, 'yes', --maxmemory-policy, noeviction]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
   qdrant:
     image: qdrant/qdrant:v1.13.6
     volumes:
@@ -55,9 +67,16 @@ services:
 
   backend:
     <<: *backend
+    environment:
+      <<: *backend-env
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      # Only the private Compose network can reach Uvicorn.
+      FORWARDED_ALLOW_IPS: "*"
     depends_on:
       ingest:
         condition: service_completed_successfully
+      redis:
+        condition: service_healthy
     restart: unless-stopped
     stop_grace_period: 45s
 
@@ -71,6 +90,7 @@ services:
     restart: unless-stopped
 
 volumes:
+  redis_data:
   qdrant_data:
   postgres_data:
   app_data:

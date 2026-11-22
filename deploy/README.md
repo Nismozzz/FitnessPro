@@ -21,12 +21,13 @@ curl --fail http://localhost/health
 
 访问 `http://localhost` 注册、填写画像，再生成计划。默认只发布前端 80 端口；本机端口被占用时在 `.env` 设置 `HTTP_PORT=8080`，访问 `http://localhost:8080`。
 
-启动依赖顺序：PostgreSQL 健康 → `migrate` 执行 `alembic upgrade head` → `ingest` 一次性入库 → 后端健康 → Nginx。`migrate`、`ingest` 成功后显示 `Exited (0)` 是正常现象。第一次下载动作数据、翻译与生成向量可能耗时较长，并产生模型 API 费用；不会把它放进镜像构建或每个 Web worker 中执行。后续启动已有数据时跳过入库；上次向量生成失败时补建索引。
+启动依赖顺序：PostgreSQL 健康 → `migrate` 执行 `alembic upgrade head` → `ingest` 一次性入库 → 后端健康 → Nginx。后端也会等待 Redis 健康。`migrate`、`ingest` 成功后显示 `Exited (0)` 是正常现象。第一次下载动作数据、翻译与生成向量可能耗时较长，并产生模型 API 费用；不会把它放进镜像构建或每个 Web worker 中执行。后续启动已有数据时跳过入库；上次向量生成失败时补建索引。
 
-`config.yml` 以只读方式挂载。修改后执行 `docker compose restart backend`；修改 `.env` 后执行 `docker compose up -d --force-recreate`。请保留 `--workers 1`：会话锁和取消任务注册表仍在进程内。
+`config.yml` 以只读方式挂载。修改后执行 `docker compose restart backend`；修改 `.env` 后执行 `docker compose up -d --force-recreate`。部署保持 `--workers 1`，取消任务注册表与后台任务在进程内执行。
 
 ## 数据与索引
 
+- `redis_data` 命名卷保存 Redis 的 AOF，记录带 TTL 的对话锁、请求计数与登录失败次数。Redis 使用 Compose 内网，无宿主机端口映射。
 - `postgres_data` 命名卷保存账号、对话、档案、记忆、计划、训练记录和监控记录。
 - `app_data` 命名卷保存原始动作、翻译缓存、动作向量与文献索引；首次从镜像内的文献 Markdown 初始化原始资料。
 - 本地开发的 SQLite 和 `data/index` 不会自动迁入 PostgreSQL，也不会被打进镜像；本次为新部署建库，不迁移已有个人数据。
@@ -86,7 +87,7 @@ alembic check
 
 ## Nginx、SSE 与云服务器
 
-前端多阶段构建为静态文件，Nginx 负责 SPA 回退与 `/api/` 反向代理。API 关闭响应缓冲和缓存，读写超时设为 900 秒；保留后端的 `X-Accel-Buffering: no`。Nginx 使用 Docker DNS 动态解析后端，容器更换 IP 后可恢复代理。
+前端多阶段构建为静态文件，Nginx 负责 SPA 回退与 `/api/` 反向代理。API 关闭响应缓冲和缓存，读写超时设为 900 秒；保留后端的 `X-Accel-Buffering: no`。Nginx 使用 Docker DNS 动态解析后端，容器更换 IP 后可恢复代理。登录防护按 Uvicorn 解析的客户端 IP 计数。Compose 中 Nginx 用 TCP 对端地址覆盖 `X-Forwarded-For`。如果 Nginx 前还有反向代理，先用 Nginx Real IP 模块配置受信任的上游地址，避免把所有登录请求计到同一个代理 IP。
 
 云服务器复制项目及自己配置的 `.env` 后按首次启动流程执行，防火墙只向外开放 80/443（SSH 按运维需要限制来源）；PostgreSQL 和后端不发布宿主机端口。公网部署需在入口配置 HTTPS 证书，可由云负载均衡或宿主机反向代理终止 TLS；此 Compose 默认仅提供 HTTP，没有自动申请证书。单独使用外部 HTTPS 入口时，将 `HTTP_PORT` 绑定改为宿主机回环地址，例如 Compose ports 使用 `127.0.0.1:8080:80`，避免绕过入口。
 

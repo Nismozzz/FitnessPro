@@ -4,7 +4,7 @@ import json
 import logging
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.config import resolve_path, settings
 from app.database.models import LLMCall, RetrievalLog, ToolCallLog
@@ -13,6 +13,18 @@ from app.utils.time import utcnow
 
 logger = logging.getLogger(__name__)
 TABLES = {"llm_calls": LLMCall, "tool_calls": ToolCallLog, "retrieval_logs": RetrievalLog}
+
+
+async def get_today_tokens(user_id: str) -> int:
+    start = utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    tokens = func.coalesce(LLMCall.prompt_tokens, 0) + func.coalesce(LLMCall.completion_tokens, 0)
+    query = select(func.coalesce(func.sum(tokens), 0)).where(
+        LLMCall.user_id == user_id,
+        LLMCall.created_at >= start,
+        LLMCall.created_at < start + timedelta(days=1),
+    )
+    async with SessionLocal() as db:
+        return int(await db.scalar(query))
 
 
 def access(user_id, scope):

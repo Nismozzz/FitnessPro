@@ -28,6 +28,11 @@ GENDERS = {"male": ("男",), "female": ("女",), "other": ("其他",)}
 GoalName = Literal["muscle_gain", "fat_loss", "strength", "endurance", "general_fitness", "rehab"]
 
 ShortText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
+DIETARY_FIELDS = {
+    "dietary_preferences": "饮食偏好",
+    "dietary_habits": "饮食习惯",
+    "dietary_restrictions": "饮食限制",
+}
 
 
 class ProfileData(BaseModel):
@@ -56,6 +61,15 @@ class ProfileData(BaseModel):
     excluded_equipment: list[EquipmentName] | None = Field(None, max_length=12, description="不可用器械类别，整体替换；只缺某台机器时不要排除整个 machine 类别")
     injuries: list[ShortText] | None = Field(
         None, max_length=10, description="伤病或身体限制（整体替换原列表），如“左膝半月板旧伤”"
+    )
+    dietary_preferences: list[ShortText] | None = Field(
+        None, max_length=10, description="长期口味与食材喜好，如“喜欢清淡”“不喜欢香菜”。整体替换，空列表清空。"
+    )
+    dietary_habits: list[ShortText] | None = Field(
+        None, max_length=10, description="长期用餐时间、餐次和备餐习惯，如“工作日午餐常点外卖”。整体替换，空列表清空。"
+    )
+    dietary_restrictions: list[ShortText] | None = Field(
+        None, max_length=10, description="明确的饮食限制，如“花生过敏”“不吃奶制品”“纯素”。整体替换，空列表清空。"
     )
     notes: str | None = Field(None, max_length=500, description="其他备注")
 
@@ -138,6 +152,9 @@ def render_profile(profile: dict[str, Any]) -> str:
         lines.append("- 不可用器械：" + "、".join(label(EQUIPMENT, x) for x in profile["excluded_equipment"]))
     if profile.get("injuries"):
         lines.append(f"- 伤病/限制：{'；'.join(profile['injuries'])}")
+    for field, name in DIETARY_FIELDS.items():
+        if values := profile.get(field):
+            lines.append(f"- {name}：{'；'.join(values)}")
     if profile.get("notes"):
         lines.append(f"- 备注：{profile['notes']}")
     if not lines:

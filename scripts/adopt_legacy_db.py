@@ -20,11 +20,25 @@ def adopt(connection):
     if set(inspector.get_table_names()) != set(Base.metadata.tables):
         raise RuntimeError('旧数据库表集合与当前基线不一致，停止接管，请人工编写迁移')
     columns = {column['name'] for column in inspector.get_columns('user_profiles')}
+    dietary_columns = {'dietary_preferences', 'dietary_habits', 'dietary_restrictions'}
+    if columns & dietary_columns:
+        raise RuntimeError('旧数据库已包含饮食画像列，无法接管为 0001，请检查数据库版本')
     operations = Operations(MigrationContext.configure(connection))
     for name, type_ in [('training_location', String(24)), ('excluded_equipment', JSON())]:
         if name not in columns:
             operations.add_column('user_profiles', Column(name, type_, nullable=True))
-    differences = compare_metadata(MigrationContext.configure(connection), Base.metadata)
+    # Legacy databases are stamped at 0001. Leave the dietary columns for upgrade.
+    def include_object(obj, name, type_, reflected, compare_to):
+        return not (
+            type_ == 'column' and obj.table.name == 'user_profiles'
+            and name in dietary_columns
+            and not reflected and compare_to is None
+        )
+
+    differences = compare_metadata(
+        MigrationContext.configure(connection, opts={'include_object': include_object}),
+        Base.metadata,
+    )
     if differences:
         raise RuntimeError(f'旧数据库结构与基线不一致，停止接管：{differences}')
     cfg = Config(str(PROJECT_ROOT / 'alembic.ini'))

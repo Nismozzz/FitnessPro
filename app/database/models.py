@@ -50,6 +50,9 @@ class UserProfile(Base):
     training_location: Mapped[str | None] = mapped_column(String(24))
     excluded_equipment: Mapped[list | None] = mapped_column(JSON)
     injuries: Mapped[list | None] = mapped_column(JSON)
+    dietary_preferences: Mapped[list[str] | None] = mapped_column(JSON)
+    dietary_habits: Mapped[list[str] | None] = mapped_column(JSON)
+    dietary_restrictions: Mapped[list[str] | None] = mapped_column(JSON)
     notes: Mapped[str | None] = mapped_column(Text)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 

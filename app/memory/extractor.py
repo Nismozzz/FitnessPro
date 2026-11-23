@@ -17,10 +17,11 @@ from app.llm.provider import get_llm
 from app.observability.context import traced_module
 from app.llm.tokens import truncate_to_tokens
 from app.memory.service import CANDIDATE, MemoryKind, MemoryScope, memory_service
+from app.users.profile import DIETARY_FIELDS, get_profile
 
 logger = logging.getLogger(__name__)
 
-EXTRACT_SYSTEM = """你负责从健身对话中提取关于用户本人、值得在以后的对话中记住的事实。
+EXTRACT_SYSTEM = """你负责从健身和饮食对话中提取关于用户本人、值得在以后的对话中记住的事实。
 只提取用户自己明确陈述的信息；不要提取助手的建议，不要推测，不要提取一次性的问题本身。
 kind 可选值：
 - injury：伤病、疼痛、身体限制（如“左膝半月板受过伤”）
@@ -29,9 +30,14 @@ kind 可选值：
 - equipment：可用器械与场地（如“家里只有一对可调哑铃”）
 - schedule：可训练的时间安排（如“工作日只能晚上练 45 分钟”）
 - body：身体数据（身高、体重、体脂等）
-- other：其他与训练相关的重要信息
-scope：长期有效用 long_term；只在短期内有效（如“这周出差”“今天腿很酸”）用 temporary。
-如果新信息更新或否定了某条已有记忆，op 用 "supersede" 并填写 supersedes_id；已有记忆里已经包含的信息不要重复提取。
+- dietary_preference：用户喜欢或不喜欢的口味、菜式、食材（如“用户不喜欢香菜”）
+- dietary_habit：经常重复的用餐和备餐方式（如“用户工作日午餐常点外卖”）
+- dietary_restriction：用户明确表示必须遵守的忌口、过敏或饮食方式（如“用户对花生过敏”）
+- other：其他与训练或饮食规划相关的重要信息
+不要把一次用餐、“今天想吃什么”、一次推荐请求或助手拟定的菜单当成偏好或习惯。不要从不喜欢推断过敏。
+scope：长期有效用 long_term；明确只在短期内有效的安排或条件（如“这周出差，只能在外面吃”）用 temporary。
+如果新信息更新或否定了某条已有记忆，op 用 "supersede" 并填写 supersedes_id。短期变化与长期信息并存时用 "add"。
+已有记忆或饮食画像已包含的信息不要重复提取。饮食画像没有记忆 ID，不能作为 supersedes 的目标。
 没有值得记住的信息时返回空数组。只输出 JSON：
 {"operations": [{"op": "add", "kind": "injury", "content": "用户左膝有旧伤，深蹲时膝盖会痛", "scope": "long_term", "supersedes_id": null, "confidence": 0.9}]}"""
 
@@ -52,11 +58,14 @@ async def extract_memories(
     """返回新建的候选记忆数量。"""
     active, candidates = await memory_service.for_prompt(user_id)
     existing = [
-        {"id": m.id, "kind": m.kind, "content": m.content, "status": m.status}
+        {"id": m.id, "kind": m.kind, "content": m.content, "status": m.status, "scope": m.scope}
         for m in active + candidates
     ]
+    profile = await get_profile(user_id)
+    dietary_profile = {field: profile[field] for field in DIETARY_FIELDS if profile.get(field)}
     prompt = (
         f"已有记忆：\n{json.dumps(existing, ensure_ascii=False)}\n\n"
+        f"已保存的饮食画像：\n{json.dumps(dietary_profile, ensure_ascii=False)}\n\n"
         f"本轮对话：\n[用户] {truncate_to_tokens(user_message, 1500)}\n"
         f"[助手] {truncate_to_tokens(assistant_message, 1000)}"
     )

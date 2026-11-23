@@ -82,6 +82,20 @@ async def test_memory_lifecycle_and_ownership(db):
     active, candidates = await memory_service.for_prompt(alice)
     assert {m.id for m in active} == {new.id, temp.id} and candidates == []
 
+    old_diet, _ = await memory_service.add(
+        alice, kind="dietary_preference", content="喜欢辛辣口味", status=ACTIVE, source="manual",
+    )
+    new_diet, _ = await memory_service.add(
+        alice, kind="dietary_preference", content="现在偏好清淡口味", status=CANDIDATE,
+        source="auto_extracted", supersedes_id=old_diet.id,
+    )
+    saved, created = await memory_service.add(
+        alice, kind="dietary_preference", content="现在偏好清淡口味", status=ACTIVE, source="user_explicit",
+    )
+    assert not created and saved.id == new_diet.id and saved.status == ACTIVE
+    statuses = {m.id: m.status for m in await memory_service.list(alice)}
+    assert statuses[old_diet.id] == ARCHIVED
+
 
 async def test_profile_update_merges(db):
     uid = await make_user()

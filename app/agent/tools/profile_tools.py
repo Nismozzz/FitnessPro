@@ -8,7 +8,7 @@ from app.users.profile import ProfileData, get_profile, update_profile
 
 class GetUserProfileTool(BaseTool):
     name = "get_user_profile"
-    description = "读取当前用户的训练画像（目标、训练水平、可训练天数、器械、伤病等）。系统提示词中已有画像，通常无需调用，除非刚刚更新过。"
+    description = "读取当前用户的训练与饮食画像。系统提示词中已有画像，通常无需调用，除非刚刚更新过。"
 
     async def run(self, params: Any, ctx: ToolContext) -> Any:
         return await get_profile(ctx.user_id)
@@ -17,8 +17,8 @@ class GetUserProfileTool(BaseTool):
 class UpdateUserProfileTool(BaseTool):
     name = "update_user_profile"
     description = (
-        "更新当前用户的训练画像。只填写用户在对话中明确提供的字段；"
-        "equipment 与 injuries 会整体替换原列表，需要追加时请带上原有内容。"
+        "更新当前用户的训练与饮食画像。只填写用户在对话中明确提供的字段。"
+        "饮食字段仅在用户明确要求修改档案时更新。列表字段会整体替换，需要追加时请带上原有内容。"
     )
     Params = ProfileData
     side_effect = True

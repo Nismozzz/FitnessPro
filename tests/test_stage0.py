@@ -10,7 +10,7 @@ from app.conversation import repository as repo
 from app.main import app
 from app.memory import extractor
 from app.utils.background import drain
-from tests.test_integration import make_user
+from tests.test_integration import ScriptedLLM, make_user
 
 
 async def test_stage0_candidate_edit_confirm_next_turn_and_ownership(db, monkeypatch):
@@ -63,3 +63,55 @@ async def test_stage0_candidate_edit_confirm_next_turn_and_ownership(db, monkeyp
         assert '检查身体限制' not in str(coach.seen[-1])
         history = (await client.get(f'/api/v1/agent/sessions/{sid}/messages', headers=headers)).json()
         assert '检查身体限制' not in str(history)
+
+
+async def test_dietary_profile_and_confirmed_memory_reach_nutrition_context(db, monkeypatch):
+    coach = ScriptedLLM(["好，我了解了。", "我会按你的习惯安排。"])
+
+    class Extractor:
+        async def complete_json(self, messages):
+            assert "dietary_habit" in messages[0]["content"]
+            assert "花生过敏" in messages[1]["content"]
+            if "[用户] 我工作日午餐常点外卖。" not in messages[1]["content"]:
+                return {"operations": []}
+            return {"operations": [{
+                "kind": "dietary_habit", "content": "工作日午餐常点外卖", "confidence": 0.95,
+            }]}
+
+    monkeypatch.setattr(service_module, "get_llm", lambda tier="normal": coach)
+    monkeypatch.setattr(extractor, "get_llm", lambda tier="fast": Extractor())
+    monkeypatch.setattr(settings.memory, "auto_extract", True)
+    uid = await make_user()
+    headers = {"Authorization": f"Bearer {create_access_token(uid)}"}
+    profile_path = "/api/v1/users/me/profile"
+    memory_path = "/api/v1/memories"
+    chat_path = "/api/v1/agent/chat"
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test", headers=headers) as client:
+        profile = await client.put(profile_path, json={
+            "goal": "fat_loss",
+            "dietary_preferences": ["不喜欢香菜"],
+            "dietary_habits": ["周末在家备餐"],
+            "dietary_restrictions": ["花生过敏"],
+        })
+        assert profile.status_code == 200
+        first = await client.post(chat_path, json={"message": "我工作日午餐常点外卖。"})
+        assert first.status_code == 200
+        await drain()
+        candidates = (await client.get(memory_path, params={"status": "candidate"})).json()
+        candidate, = candidates
+        assert candidate["kind"] == "dietary_habit"
+        assert (await client.get(profile_path)).json()["dietary_habits"] == ["周末在家备餐"]
+        confirmed = await client.post(f"{memory_path}/{candidate['id']}/confirm")
+        assert confirmed.json()["status"] == "active"
+
+        updated = await client.put(profile_path, json={"dietary_preferences": []})
+        assert updated.json()["dietary_preferences"] == []
+        assert updated.json()["goal"] == "fat_loss"
+        second = await client.post(chat_path, json={"message": "请帮我安排下周午餐。"})
+        assert second.status_code == 200
+        await drain()
+        system = coach.seen[-1][0]["content"]
+        assert "饮食习惯：周末在家备餐" in system
+        assert "饮食限制：花生过敏" in system
+        assert "饮食习惯：工作日午餐常点外卖" in system
+        assert "不喜欢香菜" not in system

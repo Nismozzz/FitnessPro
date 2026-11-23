@@ -22,7 +22,10 @@ from app.database.session import SessionLocal
 from app.llm.tokens import truncate_to_tokens
 from app.utils.time import utcnow
 
-MemoryKind = Literal["injury", "goal", "preference", "equipment", "schedule", "body", "other"]
+MemoryKind = Literal[
+    "injury", "goal", "preference", "equipment", "schedule", "body",
+    "dietary_preference", "dietary_habit", "dietary_restriction", "other",
+]
 MemoryScope = Literal["long_term", "temporary"]
 
 KIND_LABELS = {
@@ -32,6 +35,9 @@ KIND_LABELS = {
     "equipment": "器械条件",
     "schedule": "时间安排",
     "body": "身体数据",
+    "dietary_preference": "饮食偏好",
+    "dietary_habit": "饮食习惯",
+    "dietary_restriction": "饮食限制",
     "other": "其他",
 }
 
@@ -120,6 +126,10 @@ class MemoryService:
                         m.status = ACTIVE
                         m.confirmed_at = now
                         m.updated_at = now
+                        if old_id := supersedes_id or m.supersedes_id:
+                            if old_id != m.id:
+                                m.supersedes_id = old_id
+                                await self._archive_superseded(db, user_id, old_id, now)
                         await db.commit()
                     return m, False
 

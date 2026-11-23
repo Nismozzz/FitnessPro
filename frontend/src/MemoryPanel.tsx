@@ -1,24 +1,37 @@
 import { useState, type FormEvent } from 'react';
 import { Brain, Check, Pencil, Plus, RefreshCw, Trash2, X } from 'lucide-react';
 export type Memory = { id: string; content: string; status: string; kind: string };
+const editableKinds = {
+  preference: '训练偏好',
+  dietary_preference: '饮食偏好',
+  dietary_habit: '饮食习惯',
+  dietary_restriction: '饮食限制',
+} as const;
+export type EditableMemoryKind = keyof typeof editableKinds;
 type Props = {
   memories: Memory[]; tab: 'active' | 'candidate'; setTab: (tab: 'active' | 'candidate') => void;
   working: boolean; error: string; refreshing: boolean;
   refresh: () => void;
-  add: (content: string) => Promise<boolean>;
+  add: (content: string, kind: EditableMemoryKind) => Promise<boolean>;
   action: (id: string, action: string, content?: string) => Promise<boolean>;
 };
 export function MemoryPanel({ memories, tab, setTab, working, error, refreshing, refresh, add, action }: Props) {
   const [editing, setEditing] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
   const [content, setContent] = useState('');
+  const [kind, setKind] = useState<EditableMemoryKind>('preference');
   const visible = memories.filter(m => m.status === tab);
-  async function submit(e: FormEvent) { e.preventDefault(); if (await add(content.trim())) setContent(''); }
+  async function submit(e: FormEvent) { e.preventDefault(); if (await add(content.trim(), kind)) setContent(''); }
   return <>
     <p className="modal-description">自动提取的记忆需要你确认。对话结束后会延迟刷新，也可以手动查看最新结果。</p>
-    <form className="memory-add" onSubmit={submit}>
-      <input aria-label="添加训练偏好" minLength={2} maxLength={200} required value={content} onChange={e => setContent(e.target.value)} placeholder="例如：我更喜欢在早晨训练"/>
-      <button className="primary-button" disabled={working || content.trim().length < 2}><Plus size={17}/>记住</button>
+    <form className="stack-form" onSubmit={submit}>
+      <label>记忆类型<select value={kind} onChange={e => setKind(e.target.value as EditableMemoryKind)}>
+        {Object.entries(editableKinds).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+      </select></label>
+      <div className="memory-add">
+        <input aria-label="记忆内容" minLength={2} maxLength={200} required value={content} onChange={e => setContent(e.target.value)} placeholder={kind === 'preference' ? '例如：我更喜欢在早晨训练' : '填写一条想记住的饮食信息'}/>
+        <button className="primary-button" disabled={working || content.trim().length < 2}><Plus size={17}/>记住</button>
+      </div>
     </form>
     <div className="memory-toolbar"><div className="memory-tabs" role="tablist" aria-label="记忆状态">
       {(['active', 'candidate'] as const).map(status => <button key={status} role="tab" id={`memory-tab-${status}`} aria-selected={tab === status} aria-controls="memory-results" disabled={working} onClick={() => { setTab(status); setEditing(null); }}>{status === 'active' ? '已确认' : '待确认'} <span>{memories.filter(m => m.status === status).length}</span></button>)}
@@ -26,7 +39,7 @@ export function MemoryPanel({ memories, tab, setTab, working, error, refreshing,
     {error && <div className="error" role="alert">{error}</div>}
     <div className="memory-list" id="memory-results" role="tabpanel" aria-labelledby={`memory-tab-${tab}`} aria-busy={refreshing}>
       {visible.map(m => <div className="memory-item" key={m.id}><Brain size={18}/><div>
-        <span className={`memory-status ${m.status}`}>{m.status === 'candidate' ? '等待你确认' : '已确认'}</span>
+        <span className={`memory-status ${m.status}`}>{m.status === 'candidate' ? '等待你确认' : '已确认'}{m.kind.startsWith('dietary_') && m.kind in editableKinds ? ` · ${editableKinds[m.kind as EditableMemoryKind]}` : ''}</span>
         {editing === m.id ? <form className="memory-edit" onSubmit={async e => { e.preventDefault(); if (await action(m.id, 'edit', draft.trim())) setEditing(null); }}>
           <textarea aria-label="编辑记忆内容" required minLength={2} maxLength={200} value={draft} onChange={e => setDraft(e.target.value)}/>
           <div><button className="primary-button" disabled={working || draft.trim().length < 2}>保存</button><button type="button" className="text-button" disabled={working} onClick={() => setEditing(null)}>取消</button></div>
@@ -37,7 +50,7 @@ export function MemoryPanel({ memories, tab, setTab, working, error, refreshing,
           <button disabled={working} onClick={() => action(m.id, 'delete')}><Trash2 size={14}/>删除</button>
         </div></>}
       </div></div>)}
-      {!visible.length && <div className="knowledge-empty"><Brain size={32}/><h3>{tab === 'candidate' ? '没有待确认的记忆' : '还没有已确认的记忆'}</h3><p>{tab === 'candidate' ? '和教练聊聊你的情况，提取完成后会出现在这里。' : '确认候选记忆，或在上方主动添加训练偏好。'}</p></div>}
+      {!visible.length && <div className="knowledge-empty"><Brain size={32}/><h3>{tab === 'candidate' ? '没有待确认的记忆' : '还没有已确认的记忆'}</h3><p>{tab === 'candidate' ? '和教练聊聊你的情况，提取完成后会出现在这里。' : '确认候选记忆，或在上方添加训练偏好和饮食信息。'}</p></div>}
     </div>
   </>;
 }

@@ -9,6 +9,7 @@ from pathlib import Path
 
 from app.config import resolve_path, settings
 from app.knowledge.ingest import ArticleChunk
+from app.rag import cache as retrieval_cache
 from app.rag.bm25 import BM25Index
 from app.rag.embeddings import create_embedder
 from app.rag.reranker import Reranker
@@ -30,6 +31,8 @@ class ArticleRetriever:
         self.embedder = embedder
         self.reranker = reranker
         self.warnings = warnings or []
+        self._catalog_version = catalog_hash(chunks)
+        self._index_version = retrieval_cache.store_version(store)
 
     @classmethod
     def load(cls, directory: Path | None = None, *, enable_dense=True, enable_rerank=True):
@@ -66,19 +69,35 @@ class ArticleRetriever:
         from app.observability.recorder import record
         start, result, error = time.perf_counter(), None, None
         try:
-            result = await self._search(query, top_k, mode=mode, rerank=rerank)
+            cache = retrieval_cache.cache
+            if cache.active and mode in {'bm25', 'dense', 'hybrid'}:
+                embedder = self.embedder if mode != 'bm25' and self.vector_store is not None else None
+                scope = retrieval_cache.retrieval_scope(
+                    'articles', self._catalog_version, self._index_version, settings.retrieval,
+                    [mode, top_k], embedder=embedder, reranker=self.reranker if rerank else None,
+                )
+                result = await cache.search(
+                    scope, query, self.docs,
+                    lambda embed: self._search(query, top_k, mode=mode, rerank=rerank, embed_query=embed),
+                    embed=embedder.embed_query if embedder is not None else None,
+                )
+            else:
+                result = await self._search(query, top_k, mode=mode, rerank=rerank)
             return result
         except BaseException as exc:
             error = type(exc).__name__
             raise
         finally:
-            record(RetrievalLog, query=query, filters={'corpus': 'articles'},
+            filters = {'corpus': 'articles'}
+            if result and result.cache_hit:
+                filters['cache_hit'] = result.cache_hit
+            record(RetrievalLog, query=query, filters=filters,
                    mode=result.mode if result else mode, candidates=len(self.docs),
                    hit_ids=[h.doc.id for h in result.hits] if result else [],
                    latency_ms=(time.perf_counter() - start) * 1000,
                    degraded=bool(result and result.warnings), status='error' if error else 'success', error=error)
 
-    async def _search(self, query, top_k, *, mode, rerank):
+    async def _search(self, query, top_k, *, mode, rerank, embed_query=None):
         if mode not in {'bm25', 'dense', 'hybrid'}:
             raise ValueError('无效检索模式')
         cfg = settings.retrieval
@@ -86,7 +105,8 @@ class ArticleRetriever:
         dense, sparse = [], []
         if mode != 'bm25' and self.vector_store is not None and self.embedder is not None:
             try:
-                dense = await asyncio.to_thread(self.vector_store.search, await self.embedder.embed_query(query), cfg.dense_top_k)
+                vector = await (embed_query or self.embedder.embed_query)(query)
+                dense = await asyncio.to_thread(self.vector_store.search, vector, cfg.dense_top_k)
             except Exception:
                 warnings.append('文献向量检索暂不可用，降级关键词检索')
         if mode != 'dense':

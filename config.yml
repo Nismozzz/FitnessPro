@@ -90,6 +90,14 @@ retrieval:
   rrf_k: 60
   default_top_k: 6
 
+retrieval_cache:
+  enabled: true
+  l1_ttl_seconds: 3600
+  l2_enabled: true
+  l2_ttl_seconds: 3600
+  l2_similarity_threshold: 0.97
+  timeout_seconds: 0.3
+
 # -----------------------------------------------------------------------------
 # 上下文（单位：估算 token）
 # -----------------------------------------------------------------------------

@@ -114,6 +114,15 @@ class RetrievalSettings(BaseModel):
     default_top_k: int = 6
 
 
+class RetrievalCacheSettings(BaseModel):
+    enabled: bool = True
+    l1_ttl_seconds: int = Field(default=3600, gt=0)
+    l2_enabled: bool = True
+    l2_ttl_seconds: int = Field(default=3600, gt=0)
+    l2_similarity_threshold: float = Field(default=0.97, ge=0, le=1)
+    timeout_seconds: float = Field(default=0.3, gt=0)
+
+
 class ContextSettings(BaseModel):
     history_token_budget: int = 8000
     compress_trigger_tokens: int = 6000
@@ -254,6 +263,7 @@ class Settings(BaseModel):
     embedding: EmbeddingSettings = Field(default_factory=EmbeddingSettings)
     reranker: RerankerSettings = Field(default_factory=RerankerSettings)
     retrieval: RetrievalSettings = Field(default_factory=RetrievalSettings)
+    retrieval_cache: RetrievalCacheSettings = Field(default_factory=RetrievalCacheSettings)
     context: ContextSettings = Field(default_factory=ContextSettings)
     memory: MemorySettings = Field(default_factory=MemorySettings)
     web_search: WebSearchSettings = Field(default_factory=WebSearchSettings)

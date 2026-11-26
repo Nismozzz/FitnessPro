@@ -5,9 +5,9 @@ from __future__ import annotations
 import logging
 import os
 from contextlib import asynccontextmanager
-
 from pathlib import Path
 
+import httpx
 from fastapi import APIRouter, FastAPI
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -27,6 +27,7 @@ from app.nutrition.retriever import init_meal_retriever
 from app.utils.background import drain
 from app.observability.middleware import RequestTraceMiddleware
 from app.request_limits import RequestLimits
+from app.rag import cache as retrieval_cache
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
@@ -38,6 +39,12 @@ async def lifespan(app: FastAPI):
     if url:
         client = Redis.from_url(url, socket_connect_timeout=2, socket_timeout=2, retry=Retry(NoBackoff(), 0))
     limits = RequestLimits(client)
+    cache_cfg = settings.retrieval_cache
+    qdrant = None
+    if cache_cfg.enabled and cache_cfg.l2_enabled and settings.vector_store.type == "qdrant":
+        qdrant = httpx.AsyncClient(base_url=settings.vector_store.url.rstrip("/"), timeout=cache_cfg.timeout_seconds)
+    previous_cache = retrieval_cache.cache
+    retrieval_cache.cache = retrieval_cache.RetrievalCache(client, qdrant)
     previous_limits = app.state.request_limits
     app.state.request_limits = limits
     try:
@@ -53,6 +60,9 @@ async def lifespan(app: FastAPI):
             await drain()
     finally:
         app.state.request_limits = previous_limits
+        retrieval_cache.cache = previous_cache
+        if qdrant is not None:
+            await qdrant.aclose()
         await limits.close()
         await engine.dispose()
 

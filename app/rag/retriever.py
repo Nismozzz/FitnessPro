@@ -15,11 +15,12 @@ import asyncio
 import logging
 import time
 from collections import OrderedDict, defaultdict
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 
 import numpy as np
 
 from app.config import RetrievalSettings, resolve_path, settings
+from app.rag import cache as retrieval_cache
 from app.rag.bm25 import BM25Index
 from app.rag.embeddings import Embedder, create_embedder
 from app.rag.reranker import Reranker
@@ -63,6 +64,7 @@ class SearchResult:
     total_candidates: int
     mode: str
     warnings: list[str] = field(default_factory=list)
+    cache_hit: str | None = None
 
 
 class ExerciseRetriever:
@@ -84,6 +86,8 @@ class ExerciseRetriever:
         self.reranker = reranker
         self.rerank_candidates = rerank_candidates
         self._query_cache: OrderedDict[str, np.ndarray] = OrderedDict()
+        self._catalog_version = retrieval_cache.fingerprint([asdict(d) for d in docs])
+        self._index_version = retrieval_cache.store_version(self.vector_store)
 
     # ---------------- 加载 ----------------
 
@@ -177,7 +181,22 @@ class ExerciseRetriever:
         result, error = None, None
         filters = filters or ExerciseFilter()
         try:
-            result = await self._search(query, filters, top_k, mode=mode, rerank=rerank)
+            cache = retrieval_cache.cache
+            if cache.active and mode in {"bm25", "dense", "hybrid"}:
+                scope = retrieval_cache.retrieval_scope(
+                    "exercises", self._catalog_version, self._index_version, self.cfg,
+                    [filters.model_dump(mode="json"), mode, top_k or self.cfg.default_top_k,
+                     self.rerank_candidates],
+                    embedder=self.embedder if mode != "bm25" else None,
+                    reranker=self.reranker if rerank is not False else None,
+                )
+                result = await cache.search(
+                    scope, query.strip(), self.docs,
+                    lambda embed: self._search(query, filters, top_k, mode=mode, rerank=rerank, embed_query=embed),
+                    embed=self._embed_query if mode != "bm25" and self.vector_store is not None else None,
+                )
+            else:
+                result = await self._search(query, filters, top_k, mode=mode, rerank=rerank)
             return result
         except BaseException as exc:
             error = type(exc).__name__
@@ -188,7 +207,10 @@ class ExerciseRetriever:
                 or (mode == "dense" and (result is None or not result.mode.startswith("dense")))
                 or bool(result and any("暂不可用" in w for w in result.warnings))
             )
-            record(RetrievalLog, query=query, filters=filters.model_dump(mode="json"),
+            log_filters = filters.model_dump(mode="json")
+            if result and result.cache_hit:
+                log_filters["cache_hit"] = result.cache_hit
+            record(RetrievalLog, query=query, filters=log_filters,
                    mode=result.mode if result else mode, candidates=result.total_candidates if result else 0,
                    hit_ids=[h.doc.id for h in result.hits] if result else [],
                    latency_ms=(time.perf_counter() - start) * 1000, degraded=degraded,
@@ -197,6 +219,7 @@ class ExerciseRetriever:
     async def _search(
         self, query: str, filters: ExerciseFilter | None = None, top_k: int | None = None,
         *, mode: str = "hybrid", rerank: bool | None = None,
+        embed_query: retrieval_cache.EmbedQuery | None = None,
     ) -> SearchResult:
         if mode not in {"bm25", "dense", "hybrid"}:
             raise ValueError("mode must be bm25, dense, or hybrid")
@@ -226,7 +249,7 @@ class ExerciseRetriever:
         dense: list[tuple[str, float]] = []
         if mode != "bm25" and self.vector_store is not None:
             try:
-                qvec = await self._embed_query(query)
+                qvec = await (embed_query or self._embed_query)(query)
                 dense = await asyncio.to_thread(self.vector_store.search, qvec, self.cfg.dense_top_k, allowed)
             except Exception as exc:
                 logger.warning("向量检索失败，降级为关键词检索：%s", exc)
@@ -329,6 +352,7 @@ async def refresh_provider_clients() -> list[str]:
             logger.warning("Reranker 初始化失败：%s", exc)
             warnings.append("重排未就绪，检索结果不再重排。")
     retriever.vector_store = store if embedder is not None else None
+    retriever._index_version = retrieval_cache.store_version(retriever.vector_store)
     retriever.embedder = embedder
     retriever.reranker = reranker
     retriever._query_cache.clear()

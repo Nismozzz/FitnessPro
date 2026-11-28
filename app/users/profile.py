@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_vali
 
 from app.database.models import UserProfile
 from app.database.session import SessionLocal
+from app.database.mutation import mutation_session
 from app.rag.schema import EQUIPMENT, LEVELS, EquipmentName, LevelName, enum_desc, label, normalize
 from app.utils.time import utcnow
 
@@ -109,7 +110,7 @@ async def get_profile(user_id: str) -> dict[str, Any]:
 
 async def update_profile(user_id: str, data: ProfileData) -> dict[str, Any]:
     changes = data.model_dump(exclude_none=True)
-    async with SessionLocal() as db:
+    async with mutation_session() as db:
         row = await db.get(UserProfile, user_id)
         if row is None:
             row = UserProfile(user_id=user_id)
@@ -117,8 +118,7 @@ async def update_profile(user_id: str, data: ProfileData) -> dict[str, Any]:
         for key, value in changes.items():
             setattr(row, key, value)
         row.updated_at = utcnow()
-        await db.commit()
-    return await get_profile(user_id)
+    return {field: getattr(row, field) for field in PROFILE_FIELDS}
 
 
 def render_profile(profile: dict[str, Any]) -> str:

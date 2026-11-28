@@ -17,7 +17,7 @@ def adopt(connection):
     inspector = inspect(connection)
     if 'alembic_version' in inspector.get_table_names():
         raise RuntimeError('数据库已有版本记录，请使用 alembic upgrade head')
-    if set(inspector.get_table_names()) != set(Base.metadata.tables):
+    if set(inspector.get_table_names()) != set(Base.metadata.tables) - {'agent_turns'}:
         raise RuntimeError('旧数据库表集合与当前基线不一致，停止接管，请人工编写迁移')
     columns = {column['name'] for column in inspector.get_columns('user_profiles')}
     dietary_columns = {'dietary_preferences', 'dietary_habits', 'dietary_restrictions'}
@@ -27,8 +27,11 @@ def adopt(connection):
     for name, type_ in [('training_location', String(24)), ('excluded_equipment', JSON())]:
         if name not in columns:
             operations.add_column('user_profiles', Column(name, type_, nullable=True))
-    # Legacy databases are stamped at 0001. Leave the dietary columns for upgrade.
+    # Legacy databases are stamped at 0001. Ignore objects added by later revisions.
+
     def include_object(obj, name, type_, reflected, compare_to):
+        if type_ == 'table' and name == 'agent_turns':
+            return False
         return not (
             type_ == 'column' and obj.table.name == 'user_profiles'
             and name in dietary_columns

@@ -35,7 +35,8 @@ class ContextBuilder:
     def __init__(self, compressor: ContextCompressor | None = None):
         self.compressor = compressor or context_compressor
 
-    async def build(self, *, session_id: str, user_id: str, user_message: str) -> BuiltContext:
+    async def build(self, *, session_id: str, user_id: str, user_message: str,
+                    current_turn_id: str | None = None) -> BuiltContext:
         cfg = settings.context
 
         profile = await get_profile(user_id)
@@ -46,7 +47,8 @@ class ContextBuilder:
         if session is None:
             raise ValueError(f"会话不存在：{session_id}")
         rows = await repo.load_messages(session_id, session.summary_upto_seq)
-        groups = rows_to_groups(rows, cfg.history_tool_result_tokens)
+        groups = rows_to_groups([row for row in rows if row.turn_id != current_turn_id],
+                                cfg.history_tool_result_tokens)
 
         compressed_now = False
         if sum(g.tokens for g in groups) > cfg.history_token_budget:
@@ -58,7 +60,8 @@ class ContextBuilder:
                 session = await repo.get_session(session_id)
                 assert session is not None
                 rows = await repo.load_messages(session_id, session.summary_upto_seq)
-                groups = rows_to_groups(rows, cfg.history_tool_result_tokens)
+                groups = rows_to_groups([row for row in rows if row.turn_id != current_turn_id],
+                                        cfg.history_tool_result_tokens)
 
         kept, dropped = fit_recent_groups(groups, cfg.history_token_budget)
 

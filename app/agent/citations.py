@@ -26,6 +26,14 @@ class EvidenceRegistry:
         self.prefix = uuid.uuid4().hex[:12]
         self.evidence: dict[str, dict[str, Any]] = {}
 
+    def restore(self, state: dict[str, Any] | None) -> None:
+        if state:
+            self.prefix = state.get("prefix", self.prefix)
+            self.evidence = state.get("evidence", {})
+
+    def snapshot(self) -> dict[str, Any]:
+        return {"prefix": self.prefix, "evidence": self.evidence}
+
     def tool_content(self, data: dict, max_tokens: int) -> str:
         if "articles" in data:
             return self.article_content(data, max_tokens)

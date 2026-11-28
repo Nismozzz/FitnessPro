@@ -1,4 +1,5 @@
 export type ModelTier = 'fast' | 'normal';
+type ChatEventHandler = (event: string, data: Record<string, unknown>) => void;
 export const TOKEN_KEY = 'fitnesspro.token';
 export class ApiError extends Error { constructor(message: string, public status: number) { super(message); } }
 export async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
@@ -12,8 +13,25 @@ export async function request<T>(path: string, options: RequestInit = {}): Promi
   }
   return response.status === 204 ? undefined as T : response.json();
 }
-export async function streamChat(message: string, session_id: string | null, signal: AbortSignal, onEvent: (event: string, data: Record<string, unknown>) => void, modelTier: ModelTier = 'normal', selectedTools: string[] | null = null, imageIds: string[] = []) {
-  const response = await fetch('/api/v1/agent/chat', { method: 'POST', signal, headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem(TOKEN_KEY)}` }, body: JSON.stringify({ message, session_id, model_tier: modelTier, ...(imageIds.length ? { image_ids: imageIds } : {}), ...(selectedTools === null ? {} : { selected_tools: selectedTools }) }) });
+export async function streamChat(message: string, session_id: string | null, signal: AbortSignal, onEvent: ChatEventHandler, modelTier: ModelTier = 'normal', selectedTools: string[] | null = null, imageIds: string[] = [], retryTurnId?: string) {
+  const path = retryTurnId ? `/api/v1/agent/turns/${encodeURIComponent(retryTurnId)}/retry` : '/api/v1/agent/chat';
+  const body = retryTurnId ? undefined : JSON.stringify({
+    message, session_id, model_tier: modelTier,
+    ...(imageIds.length ? { image_ids: imageIds } : {}),
+    ...(selectedTools === null ? {} : { selected_tools: selectedTools }),
+  });
+  const response = await fetch(path, { method: 'POST', signal, headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${localStorage.getItem(TOKEN_KEY)}` }, body });
+  await readChatEvents(response, onEvent);
+}
+
+export async function reconnectChat(turnId: string, signal: AbortSignal, onEvent: ChatEventHandler) {
+  const response = await fetch(`/api/v1/agent/turns/${encodeURIComponent(turnId)}/events`, {
+    signal, headers: { Authorization: `Bearer ${localStorage.getItem(TOKEN_KEY)}` },
+  });
+  await readChatEvents(response, onEvent);
+}
+
+async function readChatEvents(response: Response, onEvent: ChatEventHandler) {
   if (!response.ok) { const data = await response.json().catch(() => ({})); throw new ApiError(data.detail || '对话请求失败', response.status); }
   if (!response.body) throw new Error('浏览器不支持流式响应');
   const reader = response.body.getReader(), decoder = new TextDecoder();

@@ -5,9 +5,14 @@ import sys
 
 
 def cli(url, *args):
-    return subprocess.run([sys.executable, '-m', 'alembic', *args],
-                          env={**os.environ, 'DATABASE_URL': url},
-                          capture_output=True, text=True, check=True)
+    run_module(url, 'alembic', *args)
+
+
+def run_module(url, module, *args):
+    result = subprocess.run([sys.executable, '-m', module, *args],
+                            env={**os.environ, 'DATABASE_URL': url},
+                            capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
 
 
 def test_upgrade_downgrade_and_schema_parity(tmp_path):
@@ -24,7 +29,7 @@ def test_upgrade_downgrade_and_schema_parity(tmp_path):
     cli(url, 'upgrade', 'head')
     cli(url, 'check')
     with sqlite3.connect(path) as db:
-        assert db.execute('select version_num from alembic_version').fetchone() == ('0002',)
+        assert db.execute('select version_num from alembic_version').fetchone() == ('0004',)
         assert db.execute('select username from users').fetchone() == ('tester',)
         assert db.execute(
             'select goal, dietary_preferences, dietary_habits, dietary_restrictions from user_profiles'
@@ -50,8 +55,7 @@ def test_adopt_legacy_preserves_data_and_adds_profile_fields(tmp_path):
         db.execute('alter table user_profiles drop column training_location')
         db.execute('alter table user_profiles drop column excluded_equipment')
         db.execute("insert into users values ('test', 'tester', 'hash', '2026-11-18')")
-    subprocess.run([sys.executable, '-m', 'scripts.adopt_legacy_db'],
-                   env={**os.environ, 'DATABASE_URL': url}, capture_output=True, text=True, check=True)
+    run_module(url, 'scripts.adopt_legacy_db')
     cli(url, 'upgrade', 'head')
     cli(url, 'check')
     with sqlite3.connect(path) as db:

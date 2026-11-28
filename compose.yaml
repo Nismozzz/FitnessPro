@@ -2,7 +2,10 @@ name: fitnesspro
 
 x-backend: &backend
   image: fitnesspro-backend:local
-  build: .
+  build:
+    context: .
+    args:
+      PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
   env_file: .env
   environment: &backend-env
     DATABASE_URL: postgresql+asyncpg://fitnesspro:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/fitnesspro

@@ -19,6 +19,7 @@ from sqlalchemy import delete, or_, select
 from app.config import settings
 from app.database.models import Memory
 from app.database.session import SessionLocal
+from app.database.mutation import mutation_session
 from app.llm.tokens import truncate_to_tokens
 from app.utils.time import utcnow
 
@@ -108,7 +109,7 @@ class MemoryService:
             raise MemoryOpError("记忆内容不能为空")
         now = utcnow()
 
-        async with SessionLocal() as db:
+        async with mutation_session() as db:
             if supersedes_id and await self._owned(db, user_id, supersedes_id) is None:
                 supersedes_id = None
 
@@ -130,7 +131,6 @@ class MemoryService:
                             if old_id != m.id:
                                 m.supersedes_id = old_id
                                 await self._archive_superseded(db, user_id, old_id, now)
-                        await db.commit()
                     return m, False
 
             memory = Memory(
@@ -154,7 +154,6 @@ class MemoryService:
             db.add(memory)
             if status == ACTIVE and supersedes_id:
                 await self._archive_superseded(db, user_id, supersedes_id, now)
-            await db.commit()
             return memory, True
 
     async def _archive_superseded(self, db, user_id: str, memory_id: str, now) -> None:
@@ -164,7 +163,7 @@ class MemoryService:
             old.updated_at = now
 
     async def confirm(self, user_id: str, memory_id: str) -> Memory:
-        async with SessionLocal() as db:
+        async with mutation_session() as db:
             m = await self._owned(db, user_id, memory_id)
             if m is None:
                 raise MemoryNotFound("记忆不存在")
@@ -178,11 +177,10 @@ class MemoryService:
             m.updated_at = now
             if m.supersedes_id:
                 await self._archive_superseded(db, user_id, m.supersedes_id, now)
-            await db.commit()
             return m
 
     async def _set_status(self, user_id: str, memory_id: str, status: str, allowed: set[str]) -> Memory:
-        async with SessionLocal() as db:
+        async with mutation_session() as db:
             m = await self._owned(db, user_id, memory_id)
             if m is None:
                 raise MemoryNotFound("记忆不存在")
@@ -190,7 +188,6 @@ class MemoryService:
                 raise MemoryOpError(f"当前状态 {m.status} 不能变更为 {status}")
             m.status = status
             m.updated_at = utcnow()
-            await db.commit()
             return m
 
     async def reject(self, user_id: str, memory_id: str) -> Memory:

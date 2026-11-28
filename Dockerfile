@@ -1,7 +1,8 @@
 FROM python:3.12-slim AS builder
 WORKDIR /build
 COPY requirements.txt .
-RUN pip wheel --no-cache-dir --wheel-dir /wheels -r requirements.txt
+ARG PIP_INDEX_URL=https://pypi.org/simple
+RUN pip wheel --index-url "$PIP_INDEX_URL" --no-cache-dir --wheel-dir /wheels -r requirements.txt
 
 FROM python:3.12-slim AS runtime
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1

@@ -83,3 +83,20 @@ test('progression tools can be individually selected and are locked while genera
   await render({ key: 'progression', user: 'progression', session: 'test', busy: true });
   assert.ok([...document.querySelectorAll('input')].every(el => el.disabled));
 });
+
+test('the nutrition tool is visible and can be turned off for a conversation', async () => {
+  globalThis.toolRequest = async () => [
+    { name: 'search_meals', description: '检索健身菜谱', side_effect: false, available: true },
+    { name: 'get_current_time', description: '日期', side_effect: false, available: true },
+  ];
+  await render({ key: 'nutrition', user: 'nutrition', session: 'test' });
+  const section = [...document.querySelectorAll('.tool-service')]
+    .find(group => group.querySelector('h4').textContent.includes('营养与菜谱'));
+  assert.ok(section);
+  const checkbox = section.querySelector('input');
+  assert.equal(checkbox.checked, true);
+  await act(async () => checkbox.click());
+  assert.deepEqual(state.selectedTools, ['get_current_time']);
+  await act(async () => checkbox.click());
+  assert.deepEqual(state.selectedTools, ['get_current_time', 'search_meals']);
+});

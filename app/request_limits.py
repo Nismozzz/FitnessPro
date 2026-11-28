@@ -55,7 +55,7 @@ class TurnLease:
     key: str
     owner: str
 
-    async def release(self) -> None:
+    async def release(self) -> bool:
         try:
             if self.limits.redis is not None:
                 await self.limits.redis.eval(_RELEASE, 1, self.key, self.owner)
@@ -63,6 +63,8 @@ class TurnLease:
                 self.limits._delete(self.key)
         except RedisError:
             logger.warning("释放对话锁失败，等待 Redis TTL 到期", exc_info=True)
+            return False
+        return True
 
 
 class RequestLimits:
@@ -90,16 +92,19 @@ class RequestLimits:
         self._local[key] = (value, timer)
 
     async def acquire_turn(self, user_id: str, turn_timeout: float) -> TurnLease | None:
-        key = f"fitnesspro:lock:turn:{user_id}"
-        owner = uuid4().hex
+        lease = self.turn_lease(user_id, uuid4().hex)
+        key, owner = lease.key, lease.owner
         ttl = math.ceil(turn_timeout) + PREFLIGHT_TIMEOUT + TURN_OVERHEAD + 10
         if self.redis is not None:
             acquired = await self.redis.set(key, owner, nx=True, ex=ttl)
-            return TurnLease(self, key, owner) if acquired else None
+            return lease if acquired else None
         if self._get(key) is not None:
             return None
         self._set(key, owner, ttl)
-        return TurnLease(self, key, owner)
+        return lease
+
+    def turn_lease(self, user_id: str, owner: str) -> TurnLease:
+        return TurnLease(self, f"fitnesspro:lock:turn:{user_id}", owner)
 
     async def chat_retry_after(self, user_id: str, limit: int, window: int) -> int:
         now = time.time()

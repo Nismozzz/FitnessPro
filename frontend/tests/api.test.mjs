@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import ts from 'typescript';
 const source = ts.transpileModule(readFileSync(new URL('../src/api.ts', import.meta.url), 'utf8'), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText;
-const { request, streamChat, ApiError } = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
+const { request, reconnectChat, streamChat, ApiError } = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
 globalThis.localStorage = { getItem: () => 'test-token' };
 function responseFor(text) {
   const bytes = new TextEncoder().encode(text);
@@ -64,4 +64,18 @@ test('chat preserves default, empty, and explicit tool selections', async () => 
   assert.equal(Object.hasOwn(bodies[0], 'selected_tools'), false);
   assert.deepEqual(bodies[1].selected_tools, []);
   assert.deepEqual(bodies[2].selected_tools, ['get_current_time']);
+});
+
+test('reconnect attaches authorization and replays server event IDs in order', async () => {
+  let sent;
+  globalThis.fetch = async (url, options) => {
+    sent = { url, options };
+    return responseFor('id: 1\nevent: session\ndata: {"session_id":"s1","turn_id":"t1"}\n\nid: 2\nevent: content\ndata: {"delta":"继续"}\n\nid: 3\nevent: done\ndata: {"status":"completed"}\n\n');
+  };
+  const events = [];
+  await reconnectChat('t1', new AbortController().signal, (type, data) => events.push([type, data]));
+  assert.equal(sent.url, '/api/v1/agent/turns/t1/events');
+  assert.equal(sent.options.headers.Authorization, 'Bearer test-token');
+  assert.deepEqual(events.map(([type]) => type), ['session', 'content', 'done']);
+  assert.equal(events[1][1].delta, '继续');
 });

@@ -79,6 +79,7 @@ class LogWorkoutTool(BaseTool):
     description = "将用户明确提供的训练结果记录为逐组数据。未知次数、重量或时间必须询问，不能编造。performed_at 需时区。同一次记录重试必须复用 idempotency_key，不同训练用新键。"
     Params = LogCreate
     side_effect = True
+    model_generated_key = "idempotency_key"
 
     async def run(self, params, ctx):
         return await business(service.log_workout(ctx.user_id, params))

@@ -169,7 +169,7 @@ async def test_login_lockout_and_success_resets_failures(db, limits):
 
 
 @pytest.mark.skipif(not REDIS_URL, reason="set E1_TEST_REDIS_URL for cross-client Redis tests")
-async def test_lifespan_configures_redis_client(monkeypatch):
+async def test_lifespan_configures_redis_client(db, monkeypatch):
     async def noop():
         pass
 

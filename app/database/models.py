@@ -74,6 +74,23 @@ class AgentSession(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
 
+class AgentTurn(Base):
+    __tablename__ = "agent_turns"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    session_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("agent_sessions.id", ondelete="CASCADE"), index=True
+    )
+    request_id: Mapped[str] = mapped_column(String(32))
+    request: Mapped[dict] = mapped_column(JSON)
+    status: Mapped[str] = mapped_column(String(16))
+    lease_owner: Mapped[str | None] = mapped_column(String(32))
+    writes: Mapped[dict] = mapped_column(JSON, default=dict)
+    checkpoint: Mapped[dict | None] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 class Message(Base):
     __tablename__ = "messages"
     __table_args__ = (UniqueConstraint("session_id", "seq", name="uq_message_session_seq"),)

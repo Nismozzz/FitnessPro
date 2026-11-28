@@ -34,6 +34,51 @@ async function render(element) { await act(async () => root.render(element)); }
 async function click(element) { assert.ok(element); await act(async () => element.click()); }
 function button(text) { return [...document.querySelectorAll('button')].find(e => e.textContent.trim() === text); }
 
+test('reopened conversation can retry an interrupted turn without duplicating the question', async () => {
+  const { default: App } = await import('../src/App.tsx');
+  const originalFetch = globalThis.fetch;
+  const originalScroll = window.HTMLElement.prototype.scrollIntoView;
+  window.HTMLElement.prototype.scrollIntoView = () => {};
+  localStorage.setItem('fitnesspro.token', 'test-token');
+  const question = '记录本次训练';
+  const calls = [];
+  globalThis.fetch = async (url, options) => {
+    calls.push({ url, options });
+    const json = data => new Response(JSON.stringify(data));
+    if (url.endsWith('/users/me')) return json({ username: 'test' });
+    if (url.endsWith('/agent/sessions')) return json([{ id: 's1', title: '恢复测试' }]);
+    if (url.endsWith('/sessions/s1/messages')) return json({
+      latest_turn: { id: 't1', status: 'interrupted', committed_tools: ['log_workout'] },
+      messages: [{ turn_id: 't1', role: 'user', content: question }],
+    });
+    if (url.endsWith('/turns/t1/retry')) return new Response([
+      ['session', { session_id: 's1', request_id: 'r2', turn_id: 't1' }],
+      ['content', { delta: '训练已保存。' }],
+      ['done', { status: 'completed' }],
+    ].map(([event, data]) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`).join(''));
+    if (url.endsWith('/settings/providers')) return json({ ready: true });
+    if (url.endsWith('/users/me/profile')) return json({});
+    return json([]);
+  };
+  try {
+    await render(h(App));
+    await click(button('恢复测试'));
+    assert.match(document.querySelector('.settings-banner').textContent, /已保存的操作.*记录实际训练/);
+    await click(button('重试本轮'));
+    const request = calls.find(call => call.url.endsWith('/turns/t1/retry'));
+    assert.equal(request.options.method, 'POST');
+    assert.equal(request.options.body, undefined);
+    assert.equal(document.querySelector('main').textContent.split(question).length - 1, 1);
+    assert.match(document.querySelector('main').textContent, /训练已保存/);
+    assert.equal(button('重试本轮'), undefined);
+  } finally {
+    await render(null);
+    window.HTMLElement.prototype.scrollIntoView = originalScroll;
+    globalThis.fetch = originalFetch;
+    localStorage.removeItem('fitnesspro.token');
+  }
+});
+
 test('execution shows tool arguments, results and errors, then folds and stops animation', async () => {
   const { updateExecution } = await import('../src/execution.ts');
   let execution = { startedAt: Date.now(), status: 'running', steps: [] };

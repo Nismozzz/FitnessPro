@@ -11,11 +11,23 @@ import { MemoryPanel, type EditableMemoryKind } from './MemoryPanel';
 import { DashboardPage } from './DashboardPage';
 import { useMemories } from './useMemories';
 import { EquipmentImagePicker, EquipmentPhoto, splitImageMessage } from './EquipmentImages';
-import { ApiError, request, streamChat, TOKEN_KEY } from './api';
+import { ApiError, reconnectChat, request, streamChat, TOKEN_KEY } from './api';
 import { SettingsPage } from './SettingsPage';
 
 type Session = { id: string; title: string; updated_at: string };
-type Message = { citations?: Citation[]; role: string; content: string; execution?: Execution; tool_calls?: unknown[] | null };
+type Message = { turn_id?: string; citations?: Citation[]; role: string; content: string; execution?: Execution; tool_calls?: unknown[] | null };
+type Turn = { id: string; status: string; committed_tools: string[] };
+type ChatHistory = { messages: Message[]; latest_turn: Turn | null };
+const turnStatusText: Record<string, string> = {
+  running: '本轮仍在处理，完成后会显示结果。',
+  interrupted: '本轮因服务中断而未完成。',
+  timeout: '本轮处理超时。',
+  max_iterations: '本轮达到处理轮数上限。',
+  error: '本轮处理失败。',
+  cancelled: '本轮已终止。',
+};
+const retryableStatuses = ['interrupted', 'error', 'timeout', 'max_iterations'];
+const visibleMessages = (history: ChatHistory) => history.messages.filter(m => ['user', 'assistant'].includes(m.role) && m.content && !m.tool_calls);
 type Exercise = { id: string; name: string; name_zh: string; primary_muscles: string[]; equipment: string; level: string; instructions?: string[]; images?: string[] };
 type Profile = { goal?: string; experience_level?: string; training_days_per_week?: number; session_minutes?: number; age?: number; height_cm?: number; weight_kg?: number; training_location?: string; equipment?: string[]; excluded_equipment?: string[]; injuries?: string[]; notes?: string } & Partial<Record<DietaryField, string[] | null>>;
 const dietaryFields = [
@@ -25,7 +37,7 @@ const dietaryFields = [
 ] as const;
 type DietaryField = typeof dietaryFields[number][0];
 const goals: Record<string, string> = { muscle_gain: '增肌塑形', fat_loss: '减脂瘦身', strength: '提升力量', endurance: '增强耐力', general_fitness: '保持健康', rehab: '康复与体态' };
-const tools: Record<string, string> = { identify_equipment: '识别器械照片', search_knowledge_articles: '检索综述与荟萃分析', web_search: '联网搜索公开信息', draft_weekly_plan: '校验周训练计划', save_plan: '保存计划草稿', get_active_plan: '读取当前计划', update_plan_exercise: '替换计划动作', log_workout: '记录实际训练', get_training_stats: '读取训练统计', suggest_next_week: '预览下周调整建议', apply_next_week: '确认保存下周计划', search_exercises: '检索适合你的训练动作', get_exercise_detail: '查看动作细节', get_user_profile: '读取个人档案', update_user_profile: '更新个人档案', save_memory: '保存记忆', confirm_memory: '确认记忆', forget_memory: '删除记忆', get_current_time: '获取当前日期' };
+const tools: Record<string, string> = { identify_equipment: '识别器械照片', search_knowledge_articles: '检索综述与荟萃分析', search_meals: '检索健身菜谱', web_search: '联网搜索公开信息', draft_weekly_plan: '校验周训练计划', save_plan: '保存计划草稿', get_active_plan: '读取当前计划', update_plan_exercise: '替换计划动作', log_workout: '记录实际训练', get_training_stats: '读取训练统计', suggest_next_week: '预览下周调整建议', apply_next_week: '确认保存下周计划', search_exercises: '检索适合你的训练动作', get_exercise_detail: '查看动作细节', get_user_profile: '读取个人档案', update_user_profile: '更新个人档案', save_memory: '保存记忆', confirm_memory: '确认记忆', forget_memory: '删除记忆', get_current_time: '获取当前日期' };
 const suggestions = [ { icon: Dumbbell, title: '开始力量训练', text: '我是健身新手，帮我制定一份入门力量训练计划', sub: '从第一组动作，开启改变', color: 'orange' }, { icon: Flame, title: '高效减脂塑形', text: '我想减脂，每周可以训练 3 天，有哪些训练建议？', sub: '找到适合自己的训练节奏', color: 'rose' }, { icon: Target, title: '制定专属计划', text: '帮我制定一周训练计划，先了解一下我的训练情况', sub: '让每一次训练都有方向', color: 'purple' } ];
 
 function Modal({ title, children, close }: { title: string; children: ReactNode; close: () => void }) {
@@ -49,6 +61,7 @@ export default function App() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
+  const [latestTurn, setLatestTurn] = useState<Turn | null>(null);
   const [input, setInput] = useState('');
   const [imageIds, setImageIds] = useState<string[]>([]);
   const [modelTier, setModelTier] = useModelTier();
@@ -95,32 +108,150 @@ export default function App() {
   useEffect(() => () => abort.current?.abort(), []);
   function requireAuth() { if (token) return true; setError(''); setModal('auth'); return false; }
   function discardDraftImages() { for (const id of imageIds) void request(`/images/${id}`, { method: 'DELETE' }).catch(() => {}); setImageIds([]); }
-  function newChat() { if (busy || working) return; discardDraftImages(); resetDraft(); setPage('chat'); setSessionId(null); setMessages([]); setImageIds([]); setError(''); setSidebar(false); }
-  async function openSession(id: string) { if (busy || working) return; setWorking(true); setError(''); try { const data = await request<{ messages: Message[] }>(`/agent/sessions/${id}/messages`); discardDraftImages(); setMessages(data.messages.filter(m => ['user', 'assistant'].includes(m.role) && m.content && !m.tool_calls)); setSessionId(id); setImageIds([]); setPage('chat'); setSidebar(false); } catch (e) { fail(e); } finally { setWorking(false); } }
+  function newChat() { if (busy || working) return; discardDraftImages(); resetDraft(); setPage('chat'); setSessionId(null); setMessages([]); setLatestTurn(null); setImageIds([]); setError(''); setSidebar(false); }
+  async function openSession(id: string) {
+    if (busy || working) return;
+    setWorking(true); setError('');
+    try {
+      const history = await request<ChatHistory>(`/agent/sessions/${id}/messages`);
+      discardDraftImages();
+      setMessages(visibleMessages(history));
+      setLatestTurn(history.latest_turn);
+      setSessionId(id); setPage('chat'); setSidebar(false);
+    } catch (e) { fail(e); } finally { setWorking(false); }
+  }
+  function applyChatEvent(type: string, data: Record<string, unknown>) {
+    if (['progress', 'tool_call', 'tool_result', 'error', 'done'].includes(type)) {
+      setMessages(old => old.map((m, i) => i === old.length - 1 && m.execution
+        ? { ...m, execution: updateExecution(m.execution, type, data) } : m));
+    }
+    if (type === 'content' || type === 'content_reset') {
+      setMessages(old => old.map((m, i) => i === old.length - 1
+        ? { ...m, content: type === 'content_reset' ? '' : m.content + String(data.delta ?? '') } : m));
+    }
+    if (type === 'citations') {
+      setMessages(old => old.map((m, i) => i === old.length - 1
+        ? { ...m, citations: data.citations as Citation[] } : m));
+    }
+    if (type === 'error') setError(String(data.message));
+  }
+
+  useEffect(() => {
+    if (!sessionId) { setLatestTurn(null); return; }
+    if (!token || busy || latestTurn?.status !== 'running') return;
+    const controller = new AbortController();
+    const turnId = latestTurn.id;
+    let timer: number | undefined;
+    async function follow() {
+      try {
+        await reconnectChat(turnId, controller.signal, (type, data) => {
+          if (controller.signal.aborted) return;
+          if (type === 'session') {
+            activeRequest.current = String(data.request_id);
+            if (stopPending.current) void stopGeneration();
+            setMessages(old => [...old.filter(m => m.role !== 'assistant' || m.turn_id !== turnId),
+              { turn_id: turnId, role: 'assistant', content: '',
+                execution: { startedAt: Date.now(), status: 'running', steps: [] } }]);
+            setError('');
+          }
+          applyChatEvent(type, data);
+        });
+      } catch (e) {
+        if (controller.signal.aborted) return;
+        if (e instanceof ApiError && [401, 404].includes(e.status)) {
+          setLatestTurn(null);
+          fail(e);
+          return;
+        }
+      }
+      try {
+        if (controller.signal.aborted) return;
+        const history = await request<ChatHistory>(`/agent/sessions/${sessionId}/messages`, { signal: controller.signal });
+        if (controller.signal.aborted) return;
+        if (history.latest_turn?.status !== 'running' || history.latest_turn.id !== turnId) {
+          setMessages(visibleMessages(history));
+          setLatestTurn(history.latest_turn);
+          setCancelling(false);
+          stopPending.current = false;
+          setCompletedTurns(value => value + 1);
+          return;
+        }
+      } catch (e) {
+        if (controller.signal.aborted) return;
+        if (e instanceof ApiError && [401, 404].includes(e.status)) {
+          setLatestTurn(null);
+          fail(e);
+          return;
+        }
+      }
+      if (!controller.signal.aborted) timer = window.setTimeout(follow, 2000);
+    }
+    void follow();
+    return () => {
+      controller.abort();
+      activeRequest.current = null;
+      window.clearTimeout(timer);
+    };
+  }, [sessionId, token, busy, latestTurn]);
+
   async function send(text: string) {
-    if ((!text.trim() && !imageIds.length) || busy || working) return;
+    if ((!text.trim() && !imageIds.length) || busy || working || latestTurn?.status === 'running') return;
     if (!requireAuth()) { setInput(text); return; }
     if (imageIds.length && selectedTools !== null && !selectedTools.includes('identify_equipment')) { setError('请先在工具选择中启用器械图片识别'); return; }
     const sentImages = [...imageIds];
     text = text.trim() || '请识别这张照片中的健身器械';
     const displayText = text + sentImages.map(id => `\n[图片附件：${id}]`).join('');
     setImageIds([]);
-    setError(''); setInput(''); setBusy(true); setPage('chat');
+    setInput('');
+    await runChat(text, sentImages, displayText);
+  }
+  async function retryLatestTurn() {
+    if (busy || working || !latestTurn || !retryableStatuses.includes(latestTurn.status)) return;
+    await runChat('', [], null, latestTurn.id);
+  }
+  async function runChat(text: string, sentImages: string[], displayText: string | null, retryTurnId?: string) {
+    setError(''); setBusy(true); setPage('chat');
     activeRequest.current = null; stopPending.current = false; setCancelling(false);
-    setMessages(old => [...old, { role: 'user', content: displayText }, { role: 'assistant', content: '', execution: { startedAt: Date.now(), status: 'running', steps: [] } }]);
-    let accepted = false;
+    const pending: Message = { role: 'assistant', content: '', execution: { startedAt: Date.now(), status: 'running', steps: [] } };
+    const previousMessages = messages;
+    setMessages(old => [...(displayText === null
+      ? old.filter(m => m.role !== 'assistant' || m.turn_id !== retryTurnId)
+      : [...old, { role: 'user', content: displayText }]), pending]);
+    let acceptedSession: string | undefined;
+    let terminalStatus: string | undefined;
     const controller = new AbortController(); abort.current = controller;
     try { await streamChat(text, sessionId, controller.signal, (type, data) => {
-      if (type === 'session') { accepted = true; bindSession(String(data.session_id)); setSessionId(String(data.session_id)); activeRequest.current = String(data.request_id); if (stopPending.current) void stopGeneration(); }
-      if (['progress', 'tool_call', 'tool_result', 'error', 'done'].includes(type)) setMessages(old => old.map((m, i) => i === old.length - 1 && m.execution ? { ...m, execution: updateExecution(m.execution, type, data) } : m));
-      if (type === 'content_reset') setMessages(old => old.map((m, i) => i === old.length - 1 ? { ...m, content: '' } : m));
-      if (type === 'citations') setMessages(old => old.map((m, i) => i === old.length - 1 ? { ...m, citations: data.citations as Citation[] } : m));
-      if (type === 'done') setCompletedTurns(value => value + 1);
-      if (type === 'content') setMessages(old => old.map((m, i) => i === old.length - 1 ? { ...m, content: m.content + String(data.delta ?? '') } : m));
-      if (type === 'error') setError(String(data.message));
-      if (type === 'done' && data.status === 'cancelled') setError('任务已终止，已保存的数据会保留。');
-      if (type === 'done' && !['completed', 'cancelled'].includes(String(data.status))) setError(`本次回答未完成（${data.status}），可继续追问。`);
-    }, modelTier, selectedTools, sentImages); } catch (e) { if (!accepted && sentImages.length) { setImageIds(sentImages); setInput(text); } setMessages(old => old.map((m, i) => i === old.length - 1 && m.execution ? { ...m, execution: updateExecution(m.execution, 'error', { message: controller.signal.aborted ? '连接已断开，无法确认后台任务状态' : e instanceof Error ? e.message : '连接异常' }) } : m)); if (e instanceof Error && e.name === 'AbortError') setError('连接已断开，无法确认后台任务状态，请重新打开会话查看。'); else fail(e); }
+      if (type === 'session') {
+        acceptedSession = String(data.session_id);
+        const turnId = String(data.turn_id ?? data.request_id);
+        bindSession(acceptedSession);
+        setSessionId(acceptedSession);
+        setLatestTurn({ id: turnId, status: 'running', committed_tools: [] });
+        setMessages(old => old.map((m, i) => i === old.length - 1 ? { ...m, turn_id: turnId } : m));
+        activeRequest.current = String(data.request_id);
+        if (stopPending.current) void stopGeneration();
+      }
+      applyChatEvent(type, data);
+      if (type === 'done') {
+        terminalStatus = String(data.status);
+        setCompletedTurns(value => value + 1);
+        setLatestTurn(terminalStatus === 'completed' ? null : current => current
+          ? { ...current, status: terminalStatus! } : current);
+      }
+    }, modelTier, selectedTools, sentImages, retryTurnId);
+      if (acceptedSession && terminalStatus !== 'completed') {
+        const history = await request<ChatHistory>(`/agent/sessions/${acceptedSession}/messages`, { signal: controller.signal });
+        setMessages(visibleMessages(history));
+        setLatestTurn(history.latest_turn);
+      }
+    } catch (e) {
+      if (!acceptedSession) {
+        setMessages(previousMessages);
+        if (!retryTurnId) { setImageIds(sentImages); setInput(text); }
+      }
+      if (e instanceof Error && e.name === 'AbortError') setError('连接已断开，请重新打开会话查看。');
+      else fail(e);
+    }
     finally { setMessages(old => old.map((m, i) => i === old.length - 1 && m.execution?.status === 'running' ? { ...m, execution: updateExecution(m.execution, 'done', { status: controller.signal.aborted ? 'stopped' : 'error' }) } : m)); setBusy(false); setCancelling(false); stopPending.current = false; activeRequest.current = null; abort.current = null; refreshSessions().catch(fail); }
   }
   async function authenticate(e: FormEvent<HTMLFormElement>) { e.preventDefault(); setWorking(true); setError(''); const form = new FormData(e.currentTarget); try { const data = await request<{ access_token: string }>(`/auth/${register ? 'register' : 'login'}`, { method: 'POST', body: JSON.stringify(Object.fromEntries(form)) }); localStorage.setItem(TOKEN_KEY, data.access_token); setToken(data.access_token); setModal(null); } catch (e) { fail(e); } finally { setWorking(false); } }
@@ -192,7 +323,12 @@ export default function App() {
     <main className="main"><header className="topbar"><div><button className="icon-button mobile-menu" aria-label="打开导航" onClick={() => setSidebar(true)}><Menu size={21}/></button><span className="header-title">{{ chat: 'AI 私人教练', knowledge: '训练动作库', plans: '周训练计划', logs: '训练记录', stats: '训练统计', dashboard: 'Dashborad', settings: '连接设置' }[page]}</span><span className="header-divider"/><span className="header-sub">{page === 'chat' ? '科学训练，循序进步' : '让训练更有方向'}</span></div><div className="topbar-actions"><span className="agent-badge"><span/> FitnessPro Agent</span><nav className="training-nav" aria-label="训练导航">{[['plans', '周训练计划'], ['logs', '训练记录'], ['stats', '训练统计']].map(([id, label]) => <button key={id} className={page === id ? 'training-nav-item active' : 'training-nav-item'} aria-current={page === id ? 'page' : undefined} onClick={() => { setPage(id); setSidebar(false); setError(''); }}>{label}</button>)}</nav></div></header>
     {page === 'settings' ? <SettingsPage token={token} login={() => setModal('auth')} onSaved={setProviderReady}/> : page === 'dashboard' ? <DashboardPage key={token || 'guest'} token={token} login={() => setModal('auth')} openSession={id => { void openSession(id); }}/> : ['plans', 'logs', 'stats'].includes(page) ? <TrainingWorkspace key={token || 'guest'} page={page} token={token} completedTurns={completedTurns} login={() => setModal('auth')} ask={text => { setInput(text); setPage('chat'); }} detail={showDetail}/> : page === 'chat' ? <><div className={`chat-scroll ${messages.length ? '' : 'is-empty'}`}>
       {!messages.length ? <div className="welcome"><div className="eyebrow"><span/> 为你的每一步，找到方向</div><div className="hero-symbol"><Dumbbell size={43} strokeWidth={1.7}/><span className="sparkle-one"><Sparkles size={20}/></span><span className="sparkle-two">+</span></div><h1>更好的自己，<br className="mobile-break"/>从今天开始<span>。</span></h1><p className="hero-description">我是 FitnessPro，你的 AI 私人教练。<br/>从动作选择到训练规划，陪你练得科学，也练得长久。</p><div className="feature-grid">{suggestions.map(({ icon: Icon, title, text, sub, color }) => <button className={`feature-card ${color}`} key={title} onClick={() => { setInput(text); document.getElementById('chat-input')?.focus(); }}><span className="feature-icon"><Icon size={23}/></span><h3>{title}<ArrowRight size={16}/></h3><p>{sub}</p></button>)}</div><div className="inspiration"><span>不妨这样问我</span><div><button onClick={() => setInput('只有一对哑铃，在家怎么练全身？')}>只有哑铃，在家怎么练？ <ArrowUp size={13}/></button><button onClick={() => setInput('训练后应该如何拉伸和恢复？')}>训练后如何科学拉伸？ <ArrowUp size={13}/></button></div></div><div className="welcome-foot"><ShieldCheck size={14}/> 基于动作知识库 <i/> 结合你的训练偏好 <i/> 持续了解你</div></div> : <div className="message-list">{messages.map((m, i) => <article key={i} className={`message ${m.role}`}><div className={`message-avatar ${m.role === 'assistant' ? 'coach' : ''}`}>{m.role === 'assistant' ? <Dumbbell size={18}/> : <UserRound size={18}/>}</div><div className="message-body"><div className="message-name">{m.role === 'assistant' ? 'FitnessPro' : username || '你'}{m.role === 'assistant' && <span>AI 教练</span>}</div><ThinkingBlock execution={m.execution} labels={tools}/><div className="markdown">{m.role === 'user' && splitImageMessage(m.content).ids.map(id => <EquipmentPhoto key={id} id={id} disabled={busy || working} fail={fail}/>)}<CitedMarkdown citations={m.citations} content={(m.role === 'user' ? splitImageMessage(m.content).text : m.content) || (busy && i === messages.length - 1 ? '正在处理，请稍候…' : '本轮暂无回答，可继续追问。')}/></div></div></article>)}<div ref={end}/></div>}
-    </div><div className="composer-area">{providerReady === false && <div className="settings-banner" role="status"><span>教练模型还没有 API Key，对话暂时无法开始。</span><button onClick={() => setPage('settings')}>打开连接设置 <ArrowRight size={14}/></button></div>}{error && !modal && <div role="alert" className="error">{error}<button aria-label="关闭提示" onClick={() => setError('')}><X size={15}/></button></div>}<form className="composer" onSubmit={e => { e.preventDefault(); send(input); }}><EquipmentImagePicker token={token} ids={imageIds} onChange={setImageIds} disabled={busy || working} uploading={setWorking} fail={fail}/><textarea id="chat-input" aria-label="向教练提问" placeholder="聊聊你的训练目标，剩下的交给我…" value={input} maxLength={4000} rows={2} onChange={e => setInput(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); send(input); } }}/><div className="composer-bottom"><ToolSelector key={token || 'guest'} token={token} value={selectedTools} onChange={setSelectedTools} disabled={busy || working || !username} labels={tools}/><ModelSelector value={modelTier} onChange={setModelTier} disabled={busy || working}/>{busy ? <button type="button" className="send-button" aria-label={cancelling ? "正在终止任务" : "取消生成"} disabled={cancelling} onClick={() => void stopGeneration()}><Square size={16}/></button> : <button type="submit" className="send-button" aria-label="发送消息" disabled={(!input.trim() && !imageIds.length) || working}><ArrowUp size={20}/></button>}</div></form><p className="disclaimer">AI 建议仅供参考，请根据身体状况量力而行。<span>Enter 发送 · Shift + Enter 换行</span></p></div></> : <section className="knowledge-page"><div className="section-eyebrow">MOVE WITH PURPOSE</div><h1>找到你的下一个动作<span>。</span></h1><p>按目标肌群和器械筛选，让每一次发力都有依据。</p><form className="search-form" onSubmit={search}><div className="search-input"><Search size={19}/><input aria-label="搜索动作" value={query} onChange={e => setQuery(e.target.value)} placeholder="搜索动作、肌群或训练目标…"/></div><div className="filters"><select aria-label="目标肌群" value={muscle} onChange={e => setMuscle(e.target.value)}><option value="">所有肌群</option>{Object.entries({ chest: '胸部', lats: '背部', shoulders: '肩部', biceps: '肱二头肌', triceps: '肱三头肌', abdominals: '核心', quadriceps: '大腿前侧', hamstrings: '大腿后侧', glutes: '臀部', calves: '小腿' }).map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select><select aria-label="可用器械" value={equipment} onChange={e => setEquipment(e.target.value)}><option value="">所有器械</option>{Object.entries({ 'body only': '徒手', dumbbell: '哑铃', barbell: '杠铃', machine: '固定器械', cable: '绳索', bands: '弹力带', kettlebells: '壶铃' }).map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select><button className="primary-button" disabled={working}>{working ? '检索中…' : '搜索动作'}<ArrowRight size={16}/></button></div></form>{error && !modal && <div className="error" role="alert">{error}</div>}{warning && <p className="notice">{warning}</p>}<div className="exercise-grid">{hits.map(h => <button key={h.id} className="exercise-card" disabled={working} onClick={() => showDetail(h.id)}><div className="exercise-icon"><Dumbbell size={28}/><span>{h.level}</span></div><h3>{h.name_zh || h.name}</h3><p>{h.name}</p><div><span>{h.primary_muscles.join(' · ')}</span><span>{h.equipment}</span></div><footer>查看动作步骤 <ArrowRight size={16}/></footer></button>)}</div>{!hits.length && <div className="knowledge-empty"><BookOpen size={38}/><h3>{searched ? '没有找到符合条件的动作' : '每一个好计划，都从正确的动作开始'}</h3><p>{searched ? '试试更换关键词或减少筛选条件。' : '输入关键词，探索你的训练动作库。'}</p></div>}</section>}
+    </div><div className="composer-area">
+      {!busy && latestTurn && turnStatusText[latestTurn.status] && <div className="settings-banner" role="status">
+        <span>{turnStatusText[latestTurn.status]}{latestTurn.committed_tools.length > 0 && <> 已保存的操作（{latestTurn.committed_tools.map(tool => tools[tool] || tool).join('、')}）会保留。{retryableStatuses.includes(latestTurn.status) && '重试会从最近的完整执行断点继续。'}</>}</span>
+        {retryableStatuses.includes(latestTurn.status) && <button type="button" disabled={working} onClick={() => void retryLatestTurn()}>重试本轮 <ArrowRight size={14}/></button>}
+      </div>}
+      {providerReady === false && <div className="settings-banner" role="status"><span>教练模型还没有 API Key，对话暂时无法开始。</span><button onClick={() => setPage('settings')}>打开连接设置 <ArrowRight size={14}/></button></div>}{error && !modal && <div role="alert" className="error">{error}<button aria-label="关闭提示" onClick={() => setError('')}><X size={15}/></button></div>}<form className="composer" onSubmit={e => { e.preventDefault(); send(input); }}><EquipmentImagePicker token={token} ids={imageIds} onChange={setImageIds} disabled={busy || working} uploading={setWorking} fail={fail}/><textarea id="chat-input" aria-label="向教练提问" placeholder="聊聊你的训练目标，剩下的交给我…" value={input} maxLength={4000} rows={2} onChange={e => setInput(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); send(input); } }}/><div className="composer-bottom"><ToolSelector key={token || 'guest'} token={token} value={selectedTools} onChange={setSelectedTools} disabled={busy || working || !username} labels={tools}/><ModelSelector value={modelTier} onChange={setModelTier} disabled={busy || working}/>{(busy || latestTurn?.status === 'running') ? <button type="button" className="send-button" aria-label={cancelling ? "正在终止任务" : "取消生成"} disabled={cancelling} onClick={() => void stopGeneration()}><Square size={16}/></button> : <button type="submit" className="send-button" aria-label="发送消息" disabled={(!input.trim() && !imageIds.length) || working}><ArrowUp size={20}/></button>}</div></form><p className="disclaimer">AI 建议仅供参考，请根据身体状况量力而行。<span>Enter 发送 · Shift + Enter 换行</span></p></div></> : <section className="knowledge-page"><div className="section-eyebrow">MOVE WITH PURPOSE</div><h1>找到你的下一个动作<span>。</span></h1><p>按目标肌群和器械筛选，让每一次发力都有依据。</p><form className="search-form" onSubmit={search}><div className="search-input"><Search size={19}/><input aria-label="搜索动作" value={query} onChange={e => setQuery(e.target.value)} placeholder="搜索动作、肌群或训练目标…"/></div><div className="filters"><select aria-label="目标肌群" value={muscle} onChange={e => setMuscle(e.target.value)}><option value="">所有肌群</option>{Object.entries({ chest: '胸部', lats: '背部', shoulders: '肩部', biceps: '肱二头肌', triceps: '肱三头肌', abdominals: '核心', quadriceps: '大腿前侧', hamstrings: '大腿后侧', glutes: '臀部', calves: '小腿' }).map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select><select aria-label="可用器械" value={equipment} onChange={e => setEquipment(e.target.value)}><option value="">所有器械</option>{Object.entries({ 'body only': '徒手', dumbbell: '哑铃', barbell: '杠铃', machine: '固定器械', cable: '绳索', bands: '弹力带', kettlebells: '壶铃' }).map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select><button className="primary-button" disabled={working}>{working ? '检索中…' : '搜索动作'}<ArrowRight size={16}/></button></div></form>{error && !modal && <div className="error" role="alert">{error}</div>}{warning && <p className="notice">{warning}</p>}<div className="exercise-grid">{hits.map(h => <button key={h.id} className="exercise-card" disabled={working} onClick={() => showDetail(h.id)}><div className="exercise-icon"><Dumbbell size={28}/><span>{h.level}</span></div><h3>{h.name_zh || h.name}</h3><p>{h.name}</p><div><span>{h.primary_muscles.join(' · ')}</span><span>{h.equipment}</span></div><footer>查看动作步骤 <ArrowRight size={16}/></footer></button>)}</div>{!hits.length && <div className="knowledge-empty"><BookOpen size={38}/><h3>{searched ? '没有找到符合条件的动作' : '每一个好计划，都从正确的动作开始'}</h3><p>{searched ? '试试更换关键词或减少筛选条件。' : '输入关键词，探索你的训练动作库。'}</p></div>}</section>}
     </main>
     {modal === 'auth' && <Modal title={register ? '开启你的训练旅程' : '欢迎回到 FitnessPro'} close={closeModal}><p className="modal-description">{register ? '创建账号，让教练逐渐了解你的训练目标。' : '登录后继续对话，找回专属于你的训练计划。'}</p><form className="stack-form" onSubmit={authenticate}><label>用户名<input name="username" required minLength={3} maxLength={32} pattern="[A-Za-z0-9_\-]+" autoComplete="username" placeholder="3–32 位字母、数字、下划线或短横线"/></label><label>密码<input name="password" type="password" required minLength={8} maxLength={72} autoComplete={register ? 'new-password' : 'current-password'} placeholder="至少 8 位密码"/></label>{error && <div role="alert" className="error">{error}</div>}<button className="primary-button" disabled={working}>{working ? '请稍候…' : register ? '创建账号' : '登录'}<ArrowRight size={16}/></button><button type="button" className="text-button" disabled={working} onClick={() => { setRegister(!register); setError(''); }}>{register ? '已有账号？去登录' : '还没有账号？创建一个'}</button></form></Modal>}
     {modal === 'profile' && <Modal title="我的个人档案" close={closeModal}><p className="modal-description">填写训练条件和饮食习惯，帮助教练制定适合你的计划。</p><form className="stack-form" onSubmit={saveProfile}><div className="form-grid"><label>训练目标<select name="goal" defaultValue={profile.goal || ''}><option value="">请选择</option>{Object.entries(goals).map(([v, l]) => <option value={v} key={v}>{l}</option>)}</select></label><label>训练水平<select name="experience_level" defaultValue={profile.experience_level || ''}><option value="">请选择</option><option value="beginner">新手入门</option><option value="intermediate">中级进阶</option><option value="expert">高级训练者</option></select></label>{[['age','年龄','岁',10,100],['height_cm','身高','cm',100,250],['weight_kg','体重','kg',25,300],['training_days_per_week','每周训练','天',1,7],['session_minutes','单次时长','分钟',15,240]].map(([k,l,u,min,max]) => <label key={k}>{l}（{u}）<input type="number" step={k === 'weight_kg' || k === 'height_cm' ? '0.1' : '1'} min={min} max={max} name={String(k)} defaultValue={profile[k as keyof Profile] as number || ''}/></label>)}</div><TrainingLocationFields profile={profile}/><label>伤病与身体限制<input name="injuries" defaultValue={profile.injuries?.join('，') || ''} placeholder="如有多项，请用逗号分隔"/></label><label>其他训练偏好<textarea name="notes" maxLength={500} defaultValue={profile.notes || ''} placeholder="告诉教练更多关于你的事…"/></label>

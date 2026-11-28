@@ -21,6 +21,7 @@ from redis.exceptions import RedisError
 from app.api import agent, auth, evaluations, knowledge, memories, settings as provider_settings, users, training, observability, images
 from app.config import bundle_root, settings
 from app.database.session import engine, init_db
+from app.agent.service import recover_interrupted_turns
 from app.rag.retriever import init_retriever
 from app.knowledge.retriever import init_article_retriever
 from app.nutrition.retriever import init_meal_retriever
@@ -51,6 +52,7 @@ async def lifespan(app: FastAPI):
         if client is not None:
             await client.ping()
         await init_db()
+        await recover_interrupted_turns(limits)
         await init_retriever()
         init_article_retriever()
         init_meal_retriever()

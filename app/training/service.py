@@ -9,6 +9,7 @@ from sqlalchemy import delete, func, select, update
 
 from app.database.models import Exercise, PlanDay, PlanExercise, User, WorkoutLog, WorkoutPlan, WorkoutSet, new_id
 from app.database.session import SessionLocal
+from app.database.mutation import mutation_session
 from app.memory.service import memory_service
 from app.training.schema import LogCreate, PlanDraft, Replacement
 from app.training.validator import validate_plan
@@ -96,7 +97,7 @@ async def save_plan(user_id: str, plan: PlanDraft, parent_id: str | None = None,
         raise TrainingError("计划未通过校验", 422, validation)
     data = canonical(plan)
     content_hash = digest(data)
-    async with SessionLocal() as db:
+    async with mutation_session() as db:
         await lock_user(db, user_id)
         # Recheck evidence under the same user lock/transaction as draft creation.
         # Logging and deletion acquire this lock too, so evidence cannot change
@@ -131,7 +132,6 @@ async def save_plan(user_id: str, plan: PlanDraft, parent_id: str | None = None,
                 db.add(PlanExercise(plan_day_id=dayrow.id, position=position, **exercise.model_dump(), snapshot=docs[exercise.exercise_id]))
         await db.flush()
         result = await serialize_plan(db, row)
-        await db.commit()
         return result
 
 
@@ -204,7 +204,7 @@ async def log_workout(user_id: str, body: LogCreate) -> dict:
     normalized = body.model_copy(update={"performed_at": body.performed_at.astimezone(timezone.utc)})
     data = normalized.model_dump(mode="json", exclude={"idempotency_key"})
     content_hash = digest(data)
-    async with SessionLocal() as db:
+    async with mutation_session() as db:
         await lock_user(db, user_id)
         existing = await db.scalar(select(WorkoutLog).where(WorkoutLog.user_id == user_id, WorkoutLog.idempotency_key == body.idempotency_key))
         if existing:
@@ -236,7 +236,6 @@ async def log_workout(user_id: str, body: LogCreate) -> dict:
             db.add(WorkoutSet(log_id=row.id, **entry.model_dump(), snapshot=docs[entry.exercise_id]))
         await db.flush()
         result = await serialize_log(db, row)
-        await db.commit()
         return result
 
 

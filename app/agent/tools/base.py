@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import time
@@ -31,6 +32,7 @@ class ToolContext:
     user_id: str
     session_id: str
     allow_side_effects: bool = True
+    turn_id: str | None = None
 
 
 class ToolError(Exception):
@@ -83,6 +85,7 @@ class BaseTool(ABC):
     Params: ClassVar[type[BaseModel]] = EmptyParams
     side_effect: ClassVar[bool] = False
     timeout: ClassVar[float | None] = None
+    model_generated_key: ClassVar[str | None] = None
 
     def schema(self) -> dict[str, Any]:
         schema = self.Params.model_json_schema()
@@ -163,7 +166,8 @@ class ToolExecutor:
 
         timeout = tool.timeout or self.default_timeout
         try:
-            data = await asyncio.wait_for(tool.run(params, ctx), timeout=timeout)
+            run = self._run_mutation(tool, params, ctx) if tool.side_effect and ctx.turn_id else tool.run(params, ctx)
+            data = await asyncio.wait_for(run, timeout=timeout)
         except asyncio.TimeoutError:
             logger.warning("工具 %s 超时（%.0fs）", call.name, timeout)
             return ToolResult(False, error=f"工具执行超时（{timeout:.0f} 秒）")
@@ -173,3 +177,34 @@ class ToolExecutor:
             logger.exception("工具 %s 执行失败 user=%s", call.name, ctx.user_id)
             return ToolResult(False, error="工具内部错误，请稍后重试或换一种方式完成任务")
         return ToolResult(True, data=data)
+
+    async def _run_mutation(self, tool: BaseTool, params: BaseModel, ctx: ToolContext) -> Any:
+        from app.database.models import AgentTurn
+        from app.database.mutation import tool_transaction
+        from app.database.session import SessionLocal
+
+        excluded = {tool.model_generated_key} if tool.model_generated_key else None
+        arguments = params.model_dump(mode="json", exclude=excluded)
+        serialized = json.dumps([ctx.turn_id, tool.name, arguments], sort_keys=True, ensure_ascii=False)
+        key = hashlib.sha256(serialized.encode()).hexdigest()
+        async with SessionLocal() as db:
+            turn = await db.get(AgentTurn, ctx.turn_id)
+            if turn is None or turn.status != "running":
+                raise ToolError("本轮任务已结束")
+            if key in turn.writes:
+                return turn.writes[key]["result"]
+
+        # The business mutation and its receipt have a single commit point.
+        async with SessionLocal.begin() as db:
+            token = tool_transaction.set(db)
+            try:
+                data = await tool.run(params, ctx)
+            finally:
+                tool_transaction.reset(token)
+            turn = await db.get(AgentTurn, ctx.turn_id)
+            if turn is None or turn.status != "running":
+                raise ToolError("本轮任务已结束")
+            if not (isinstance(data, dict) and data.get("saved") is False):
+                receipt = {"tool": tool.name, "result": json.loads(json.dumps(data, default=str))}
+                turn.writes = {**turn.writes, key: receipt}
+            return data

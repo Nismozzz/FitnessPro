@@ -16,12 +16,12 @@ Agent 执行循环（Function Calling 风格的 ReAct）。
 from __future__ import annotations
 
 import asyncio
-from dataclasses import replace
+from dataclasses import asdict, replace
 import json
 import logging
 import time
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import aclosing
 from typing import Any
 
@@ -64,167 +64,205 @@ class AgentLoop:
         messages: list[dict[str, Any]],
         ctx: ToolContext,
         transcript: list[dict[str, Any]],
+        checkpoint: dict[str, Any] | None = None,
+        save_checkpoint: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     ) -> AsyncIterator[AgentEvent]:
         """
         messages：本次执行的工作上下文（会被追加）。
         transcript：需要持久化的新消息（assistant / tool），由调用方保存。
         """
         evidence = EvidenceRegistry()
+        if checkpoint:
+            messages[:] = checkpoint["messages"]
+            transcript[:] = checkpoint["transcript"]
+            evidence.restore(checkpoint.get("evidence"))
+            ctx = replace(ctx, allow_side_effects=checkpoint.get(
+                "allow_side_effects", ctx.allow_side_effects
+            ))
         tools = self.executor.schemas() or None
         deadline = time.monotonic() + self.cfg.total_timeout
-        usage = {"prompt_tokens": 0, "completion_tokens": 0}
-        tool_calls_count = 0
-        training_skill_loaded = False
+        usage = dict((checkpoint or {}).get("usage", {"prompt_tokens": 0, "completion_tokens": 0}))
+        tool_calls_count = (checkpoint or {}).get("tool_calls", 0)
+        training_skill_loaded = (checkpoint or {}).get("training_skill_loaded", False)
+        pending_batch = (checkpoint or {}).get("pending_batch")
+        start_iteration = (checkpoint or {}).get("iteration", 0) + (0 if pending_batch else 1)
 
-        for iteration in range(1, self.cfg.max_iterations + 1):
+        async def save(iteration: int, batch: dict | None = None) -> None:
+            if save_checkpoint is not None:
+                await save_checkpoint({
+                    "iteration": iteration,
+                    "messages": [
+                        {**message, "reasoning_content": ""} if "reasoning_content" in message else message
+                        for message in messages
+                    ],
+                    "transcript": transcript,
+                    "usage": usage,
+                    "tool_calls": tool_calls_count,
+                    "training_skill_loaded": training_skill_loaded,
+                    "allow_side_effects": ctx.allow_side_effects,
+                    "evidence": evidence.snapshot(),
+                    "pending_batch": batch,
+                })
+
+        for iteration in range(start_iteration, self.cfg.max_iterations + 1):
             remaining = deadline - time.monotonic()
             if remaining <= 1:
                 yield AgentEvent("error", {"message": "本次任务处理超时"})
                 yield self._done("timeout", iteration - 1, usage, tool_calls_count)
                 return
 
-            last_round = (iteration == self.cfg.max_iterations
-                          or remaining <= self.cfg.final_answer_reserve)
-            overrides: dict[str, Any] = {"timeout": remaining}
-            if tools and last_round:
-                overrides["tool_choice"] = "none"
+            if pending_batch is None:
+                last_round = (iteration == self.cfg.max_iterations
+                              or remaining <= self.cfg.final_answer_reserve)
+                overrides: dict[str, Any] = {"timeout": remaining}
+                if tools and last_round:
+                    overrides["tool_choice"] = "none"
 
-            request_messages = messages
-            if last_round:
-                request_messages = [*messages, {
-                    "role": "system",
-                    "content": "本轮为收尾回答，不能再调用工具。只根据已有成功工具结果中实际可见的信息回答，继续遵守依据与忠实性规则；未检索到的动作事实、未获取的详情和被截断的内容不得凭常识补齐。资料不足时只回答有依据的部分并明确说明缺失；没有依据时说明无法据此回答。拟定计划参数仍须标明为建议，不能说成知识库事实。若计划未保存成功，明确说明尚未保存和剩余步骤，不得声称已完成。不要叙述内部推理过程。",
-                }]
+                request_messages = messages
+                if last_round:
+                    request_messages = [*messages, {
+                        "role": "system",
+                        "content": "本轮为收尾回答，不能再调用工具。只根据已有成功工具结果中实际可见的信息回答，继续遵守依据与忠实性规则；未检索到的动作事实、未获取的详情和被截断的内容不得凭常识补齐。资料不足时只回答有依据的部分并明确说明缺失；没有依据时说明无法据此回答。拟定计划参数仍须标明为建议，不能说成知识库事实。若计划未保存成功，明确说明尚未保存和剩余步骤，不得声称已完成。不要叙述内部推理过程。",
+                    }]
 
-            yield AgentEvent("progress", {"phase": "waiting", "iteration": iteration})
-            last_phase = "waiting"
-            last_progress = time.monotonic()
-            content_parts: list[str] = []
-            reasoning_parts: list[str] = []
-            pending: dict[int, dict[str, str]] = {}
-            try:
-                async for chunk in self._stream_with_deadline(
-                    request_messages, tools, remaining, overrides
-                ):
-                    if chunk.usage:
-                        usage["prompt_tokens"] += chunk.usage.prompt_tokens or 0
-                        usage["completion_tokens"] += chunk.usage.completion_tokens or 0
-                    if not chunk.choices:
-                        continue
-                    delta = chunk.choices[0].delta
-                    if delta is None:
-                        continue
-                    reasoning = getattr(delta, "reasoning_content", None)
-                    phase = ("reasoning" if reasoning else "tool_arguments" if delta.tool_calls
-                             else "answering" if delta.content else None)
-                    if phase and (phase != last_phase or time.monotonic() - last_progress >= 1):
-                        yield AgentEvent("progress", {"phase": phase, "iteration": iteration})
-                        last_phase, last_progress = phase, time.monotonic()
-                    if reasoning:
-                        reasoning_parts.append(reasoning)
-                    if delta.content:
-                        content_parts.append(delta.content)
-                        if not pending:
-                            yield AgentEvent("content", {"delta": delta.content})
+                yield AgentEvent("progress", {"phase": "waiting", "iteration": iteration})
+                last_phase = "waiting"
+                last_progress = time.monotonic()
+                content_parts: list[str] = []
+                reasoning_parts: list[str] = []
+                pending: dict[int, dict[str, str]] = {}
+                try:
+                    async for chunk in self._stream_with_deadline(
+                        request_messages, tools, remaining, overrides
+                    ):
+                        if chunk.usage:
+                            usage["prompt_tokens"] += chunk.usage.prompt_tokens or 0
+                            usage["completion_tokens"] += chunk.usage.completion_tokens or 0
+                        if not chunk.choices:
+                            continue
+                        delta = chunk.choices[0].delta
+                        if delta is None:
+                            continue
+                        reasoning = getattr(delta, "reasoning_content", None)
+                        phase = ("reasoning" if reasoning else "tool_arguments" if delta.tool_calls
+                                 else "answering" if delta.content else None)
+                        if phase and (phase != last_phase or time.monotonic() - last_progress >= 1):
+                            yield AgentEvent("progress", {"phase": phase, "iteration": iteration})
+                            last_phase, last_progress = phase, time.monotonic()
+                        if reasoning:
+                            reasoning_parts.append(reasoning)
+                        if delta.content:
+                            content_parts.append(delta.content)
+                            if not pending:
+                                yield AgentEvent("content", {"delta": delta.content})
 
-                    if delta.tool_calls and not pending:
-                        # 工具调用前的文字不是最终答案，撤回本轮的临时正文。
-                        yield AgentEvent("content_reset", {})
-                    for tc in delta.tool_calls or []:
-                        index = tc.index if tc.index is not None else len(pending)
-                        slot = pending.setdefault(index, {"id": "", "name": "", "arguments": ""})
-                        if tc.id:
-                            slot["id"] = tc.id
-                        if tc.function is not None:
-                            if tc.function.name:
-                                slot["name"] = tc.function.name
-                            if tc.function.arguments:
-                                slot["arguments"] += tc.function.arguments
-            except Exception as exc:
-                logger.exception("LLM 调用失败 session=%s iteration=%d", ctx.session_id, iteration)
-                partial = "".join(content_parts)
-                if partial and not pending:
-                    cleaned, citations, invalid = evidence.resolve(partial)
-                    if cleaned != partial:
+                        if delta.tool_calls and not pending:
+                            # 工具调用前的文字不是最终答案，撤回本轮的临时正文。
+                            yield AgentEvent("content_reset", {})
+                        for tc in delta.tool_calls or []:
+                            index = tc.index if tc.index is not None else len(pending)
+                            slot = pending.setdefault(index, {"id": "", "name": "", "arguments": ""})
+                            if tc.id:
+                                slot["id"] = tc.id
+                            if tc.function is not None:
+                                if tc.function.name:
+                                    slot["name"] = tc.function.name
+                                if tc.function.arguments:
+                                    slot["arguments"] += tc.function.arguments
+                except Exception as exc:
+                    logger.exception("LLM 调用失败 session=%s iteration=%d", ctx.session_id, iteration)
+                    partial = "".join(content_parts)
+                    if partial and not pending:
+                        cleaned, citations, invalid = evidence.resolve(partial)
+                        if cleaned != partial:
+                            yield AgentEvent("content_reset", {})
+                            yield AgentEvent("content", {"delta": cleaned})
+                        if citations or invalid:
+                            yield AgentEvent("citations", {"citations": citations, "invalid_ids": invalid})
+                        transcript.append({"role": "assistant", "content": cleaned})
+                    timed_out = isinstance(exc, TimeoutError)
+                    yield AgentEvent("error", {"message": "本次任务处理超时" if timed_out else f"模型调用失败：{type(exc).__name__}"})
+                    yield self._done("timeout" if timed_out else "error", iteration, usage, tool_calls_count)
+                    return
+
+                content = "".join(content_parts)
+
+                yield AgentEvent("progress", {"phase": "model_done", "iteration": iteration})
+
+                if not pending:
+                    cleaned, citations, invalid = evidence.resolve(content)
+                    if cleaned != content:
                         yield AgentEvent("content_reset", {})
                         yield AgentEvent("content", {"delta": cleaned})
                     if citations or invalid:
                         yield AgentEvent("citations", {"citations": citations, "invalid_ids": invalid})
                     transcript.append({"role": "assistant", "content": cleaned})
-                timed_out = isinstance(exc, TimeoutError)
-                yield AgentEvent("error", {"message": "本次任务处理超时" if timed_out else f"模型调用失败：{type(exc).__name__}"})
-                yield self._done("timeout" if timed_out else "error", iteration, usage, tool_calls_count)
-                return
+                    yield self._done("completed", iteration, usage, tool_calls_count)
+                    return
 
-            content = "".join(content_parts)
-
-            yield AgentEvent("progress", {"phase": "model_done", "iteration": iteration})
-
-            if not pending:
-                cleaned, citations, invalid = evidence.resolve(content)
-                if cleaned != content:
-                    yield AgentEvent("content_reset", {})
-                    yield AgentEvent("content", {"delta": cleaned})
-                if citations or invalid:
-                    yield AgentEvent("citations", {"citations": citations, "invalid_ids": invalid})
-                transcript.append({"role": "assistant", "content": cleaned})
-                yield self._done("completed", iteration, usage, tool_calls_count)
-                return
-
-            if last_round:
-                # 已禁止工具调用但模型仍然返回了调用：结束本轮，保留已有文本
-                cleaned, citations, invalid = evidence.resolve(content)
-                if cleaned != content:
-                    yield AgentEvent("content_reset", {})
-                    yield AgentEvent("content", {"delta": cleaned})
-                if citations or invalid:
-                    yield AgentEvent("citations", {"citations": citations, "invalid_ids": invalid})
-                transcript.append(
-                    {"role": "assistant", "content": cleaned or "（本次任务步骤过多，未能完成，请缩小问题范围后重试）"}
-                )
-                yield AgentEvent("error", {"message": "达到最大推理轮数"})
-                yield self._done("max_iterations", iteration, usage, tool_calls_count)
-                return
-
-            calls: list[ToolCall] = []
-            for index in sorted(pending):
-                slot = pending[index]
-                args, error = _parse_arguments(slot["arguments"])
-                calls.append(
-                    ToolCall(
-                        id=slot["id"] or f"call_{uuid.uuid4().hex[:12]}",
-                        name=slot["name"],
-                        arguments=args,
-                        raw_arguments=slot["arguments"],
-                        parse_error=error,
+                if last_round:
+                    # 已禁止工具调用但模型仍然返回了调用：结束本轮，保留已有文本
+                    cleaned, citations, invalid = evidence.resolve(content)
+                    if cleaned != content:
+                        yield AgentEvent("content_reset", {})
+                        yield AgentEvent("content", {"delta": cleaned})
+                    if citations or invalid:
+                        yield AgentEvent("citations", {"citations": citations, "invalid_ids": invalid})
+                    transcript.append(
+                        {"role": "assistant", "content": cleaned or "（本次任务步骤过多，未能完成，请缩小问题范围后重试）"}
                     )
-                )
+                    yield AgentEvent("error", {"message": "达到最大推理轮数"})
+                    yield self._done("max_iterations", iteration, usage, tool_calls_count)
+                    return
 
-            assistant_msg: dict[str, Any] = {
-                "role": "assistant",
-                "content": content or None,
-                "tool_calls": [
-                    {
-                        "id": c.id,
-                        "type": "function",
-                        "function": {"name": c.name, "arguments": c.raw_arguments or "{}"},
-                    }
-                    for c in calls
-                ],
-            }
-            working_msg = dict(assistant_msg)
-            if reasoning_parts:
-                working_msg["reasoning_content"] = "".join(reasoning_parts)
-            messages.append(working_msg)
-            transcript.append(assistant_msg)
+                calls: list[ToolCall] = []
+                for index in sorted(pending):
+                    slot = pending[index]
+                    args, error = _parse_arguments(slot["arguments"])
+                    calls.append(
+                        ToolCall(
+                            id=slot["id"] or f"call_{uuid.uuid4().hex[:12]}",
+                            name=slot["name"],
+                            arguments=args,
+                            raw_arguments=slot["arguments"],
+                            parse_error=error,
+                        )
+                    )
 
-            # Lock the whole batch before executing anything, even if a write is
-            # listed before web_search. This immutable context persists this turn.
-            if any(call.name in {"web_search", "identify_equipment"} for call in calls):
-                ctx = replace(ctx, allow_side_effects=False)
-            skill_visible_to_model = training_skill_loaded
-            pending_skill_message = None
-            for call in calls:
+                assistant_msg: dict[str, Any] = {
+                    "role": "assistant",
+                    "content": content or None,
+                    "tool_calls": [
+                        {
+                            "id": c.id,
+                            "type": "function",
+                            "function": {"name": c.name, "arguments": c.raw_arguments or "{}"},
+                        }
+                        for c in calls
+                    ],
+                }
+                working_msg = dict(assistant_msg)
+                if reasoning_parts:
+                    working_msg["reasoning_content"] = "".join(reasoning_parts)
+                messages.append(working_msg)
+                transcript.append(assistant_msg)
+
+                # Lock the whole batch before executing anything, even if a write is
+                # listed before web_search. This immutable context persists this turn.
+                if any(call.name in {"web_search", "identify_equipment"} for call in calls):
+                    ctx = replace(ctx, allow_side_effects=False)
+                pending_batch = {
+                    "calls": [asdict(call) for call in calls],
+                    "next_tool": 0,
+                    "skill_visible": training_skill_loaded,
+                    "skill_message": None,
+                }
+                await save(iteration, pending_batch)
+
+            skill_visible_to_model = pending_batch["skill_visible"]
+            pending_skill_message = pending_batch["skill_message"]
+            for index in range(pending_batch["next_tool"], len(pending_batch["calls"])):
+                call = ToolCall(**pending_batch["calls"][index])
                 tool_calls_count += 1
                 yield AgentEvent(
                     "tool_call", {"id": call.id, "name": call.name, "arguments": call.arguments}
@@ -277,6 +315,12 @@ class AgentLoop:
                 transcript.append(
                     {"role": "tool", "tool_call_id": call.id, "name": call.name, "content": content_str}
                 )
+                if skill_message is not None:
+                    pending_skill_message = skill_message
+                pending_batch = {
+                    **pending_batch, "next_tool": index + 1, "skill_message": pending_skill_message,
+                }
+                await save(iteration, pending_batch)
                 yield AgentEvent(
                     "tool_result",
                     {
@@ -288,13 +332,11 @@ class AgentLoop:
                         "ms": int((time.monotonic() - started) * 1000),
                     },
                 )
-                if skill_message is not None:
-                    # 放在该批所有工具结果之后，保持 assistant/tool 协议连续。
-                    # 同批尚未执行的结果会先追加，批结束后再注入。
-                    pending_skill_message = skill_message
 
             if pending_skill_message is not None:
                 messages.append(pending_skill_message)
+            pending_batch = None
+            await save(iteration)
 
         # for 循环正常结束只可能发生在 max_iterations <= 0 的配置下
         yield AgentEvent("error", {"message": "max_iterations 配置无效"})

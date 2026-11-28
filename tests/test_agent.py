@@ -1,4 +1,5 @@
 import asyncio
+import copy
 from types import SimpleNamespace
 
 from pydantic import BaseModel, Field
@@ -129,6 +130,117 @@ async def test_loop_tool_then_answer():
     # 第二次调用模型时能看到工具结果，且发送给模型的 tool 消息不含 name 字段
     second = llm.calls[1]["messages"]
     assert second[-1]["role"] == "tool" and "name" not in second[-1]
+
+
+async def test_loop_restores_checkpoint_after_tool_round():
+    llm = FakeLLM([
+        [chunk("计划已保存。")],
+    ])
+    loop = AgentLoop(llm, ToolExecutor([EchoTool()]), AgentSettings(max_iterations=4))
+    checkpoint = {
+        "iteration": 1,
+        "messages": [
+            {"role": "user", "content": "请执行并说明"},
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "c1", "type": "function",
+                 "function": {"name": "echo", "arguments": "{\"text\": \"已保存\"}"}}
+            ]},
+            {"role": "tool", "tool_call_id": "c1",
+             "content": '{"ok": true, "data": {"echo": "已保存", "user": "u1"}}'},
+        ],
+        "transcript": [
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "c1", "type": "function",
+                 "function": {"name": "echo", "arguments": "{\"text\": \"已保存\"}"}}
+            ]},
+            {"role": "tool", "tool_call_id": "c1", "name": "echo",
+             "content": '{"ok": true, "data": {"echo": "已保存", "user": "u1"}}'},
+        ],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 2},
+        "tool_calls": 1,
+        "training_skill_loaded": False,
+        "allow_side_effects": True,
+        "evidence": {"prefix": "saved", "evidence": {}},
+        "elapsed_seconds": 2,
+    }
+    messages = [{"role": "system", "content": "system"}]
+    transcript = []
+    saved = []
+    events = [event async for event in loop.run(
+        messages, CTX, transcript, checkpoint=checkpoint,
+        save_checkpoint=lambda state: _save_checkpoint(saved, state),
+    )]
+    assert len(llm.calls) == 1
+    assert llm.calls[0]["messages"][1]["role"] == "assistant"
+    assert [message["role"] for message in transcript] == ["assistant", "tool", "assistant"]
+    assert not saved
+    assert events[-1].data["status"] == "completed"
+
+
+async def _save_checkpoint(saved, state):
+    saved.append(state)
+    return True
+
+
+async def test_checkpoint_resumes_next_model_round_without_repeating_tool():
+    class InterruptAfterFirstRound:
+        def __init__(self):
+            self.calls = 0
+            self.wait_forever = asyncio.Event()
+
+        async def stream(self, messages, tools=None, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                yield chunk(tool_calls=[tc(0, "c1", "echo", '{"text": "once"}')])
+                return
+            await self.wait_forever.wait()
+
+    class CountingEcho(EchoTool):
+        calls = 0
+
+        async def run(self, params, ctx):
+            self.calls += 1
+            return await super().run(params, ctx)
+
+    llm = InterruptAfterFirstRound()
+    tool = CountingEcho()
+    loop = AgentLoop(llm, ToolExecutor([tool]), AgentSettings(max_iterations=4))
+    saved = []
+    checkpoint_ready = asyncio.Event()
+
+    async def save(state):
+        saved.append(copy.deepcopy(state))
+        if state["pending_batch"] is None:
+            checkpoint_ready.set()
+        return True
+
+    async def run_until_interrupted():
+        transcript = []
+        async for _ in loop.run(
+            [{"role": "system", "content": "system"}, {"role": "user", "content": "run"}],
+            CTX, transcript, save_checkpoint=save,
+        ):
+            pass
+
+    active = asyncio.create_task(run_until_interrupted())
+    await asyncio.wait_for(checkpoint_ready.wait(), timeout=2)
+    active.cancel()
+    await asyncio.gather(active, return_exceptions=True)
+    assert saved[-1]["iteration"] == 1
+    assert tool.calls == 1
+
+    resumed_llm = FakeLLM([[chunk("已继续完成。")]])
+    resumed = AgentLoop(resumed_llm, ToolExecutor([tool]), AgentSettings(max_iterations=4))
+    transcript = []
+    events = [event async for event in resumed.run(
+        [{"role": "system", "content": "rebuilt system"}], CTX, transcript,
+        checkpoint=saved[-1],
+    )]
+    assert resumed_llm.calls[0]["messages"][1]["role"] == "user"
+    assert [message["role"] for message in transcript] == ["assistant", "tool", "assistant"]
+    assert transcript[-1]["content"] == "已继续完成。"
+    assert tool.calls == 1
+    assert events[-1].data["status"] == "completed"
 
 
 async def test_loop_bad_json_is_reported_back():

@@ -52,7 +52,9 @@ FitnessPro 是面向健身人群的 AI 训练管理平台。用户可以通过�
 ### 1. Agent 智能训练助手
 
 - 支持多轮对话、会话列表、历史消息回看与会话删除。
-- 通过 SSE 流式输出回答，展示工具调用过程与结果。
+- 通过 SSE 流式输出回答，展示工具调用过程与结果。刷新页面或重新打开会话时，仍在运行的任务会重放已产生的事件，并继续推送后续输出。
+- 每轮对话的请求、任务状态和最终回答保存到业务数据库。后端重启后，执行中的轮次标记为已中断，用户可在会话中对最新一轮点击「重试本轮」。
+- Agent 在执行工具批次前、每个工具返回后和批次结束时保存断点，记录模型上下文、工具执行进度和引用证据。重试从最近的断点继续，模型流式输出中途被打断时会重新请求该次模型调用。已提交的业务写入可通过操作回执复用结果，避免重复写入。
 - 输入区可选择 Fast / Normal 模型档位及本轮工具集。
 - 执行面板可显示或隐藏模型阶段与耗时，用于区分等待响应、模型推理、工具参数生成和工具执行等阶段；不展示原始思考文本。
 - 点击取消会向后端提交终止请求，取消正在执行的轮次；已提交的数据不会自动回滚。
@@ -172,6 +174,8 @@ docker compose logs -f migrate ingest backend
 
 Compose 会启动 PostgreSQL、Qdrant、Redis、数据库迁移任务、首次入库任务、FastAPI 后端及 Nginx 前端。首次下载动作、翻译和生成向量可能耗时较长并产生 API 费用，已有完整数据时跳过相应入库步骤。`migrate` 与 `ingest` 完成后显示 `Exited (0)` 为正常状态。
 
+已有部署更新代码后，重新运行 `docker compose up -d --build`。Compose 会在启动后端前应用尚未执行的 Alembic 迁移。对话任务表由 `0003` 创建，Agent 断点字段由 `0004` 添加。
+
 **4. 访问应用**
 
 ```bash
@@ -241,6 +245,8 @@ npm run build
 
 阶段 E1 的接口回归默认使用进程内存储。将 `E1_TEST_REDIS_URL` 指向测试 Redis 实例或数据库后，运行 `pytest tests/test_request_limits.py tests/test_cancellation.py` 可追加 Redis 接口和跨客户端回归。
 
+运行 `pytest tests/test_agent.py tests/test_turn_recovery.py` 可验证 Agent 从断点继续执行，以及进程在提交训练记录后退出时重试仅保留一条训练记录。
+
 也可在项目根目录执行 `python -m scripts.chat_cli`，通过命令行调试对话，无需启动 HTTP 服务。
 
 安全回归覆盖用户输入、检索文档及搜索结果三类提示注入，以及膝、肩、腰、腕、踝伤病约束和就医提示。`pytest tests/test_safety.py tests/test_web_search.py` 验证权限边界、真实工具数据通路与评分反例；11 条真实模型评测的运行方式见 [安全回归评测](eval/PROTOCOL.md#安全回归评测)。离线测试通过不代表真实模型已通过安全评测。
@@ -301,7 +307,7 @@ app/
   api/             HTTP 路由
   auth/            密码哈希与 JWT 鉴权
   context/         历史分组、上下文预算与摘要压缩
-  conversation/    会话与消息存储
+  conversation/    会话、消息、任务状态与断点存储
   database/        ORM 模型与数据库会话
   evaluation/      在线 RAGAS 评估
   knowledge/       文献分块、索引与检索
@@ -336,6 +342,7 @@ Docker 使用 `postgres_data` 保存业务数据、`qdrant_data` 保存向量数
 - [x] 器械图片识别与确认后的动作推荐
 - [x] 营养专家、菜谱结构化切分与独立 meals 向量库
 - [x] 任务取消、模型阶段与耗时展示
+- [x] 对话任务持久化、Agent 断点恢复与流式重连
 - [x] 运行监控、离线评测与可选在线评估
 - [x] Docker Compose 部署、Alembic 迁移与 Qdrant 持久化
 - [ ] 增加未引用图片的过期清理与保留策略
@@ -344,4 +351,4 @@ Docker 使用 `postgres_data` 保存业务数据、`qdrant_data` 保存向量数
 - [ ] 将取消任务注册表与后台任务迁移到共享存储
 
 
-取消任务注册表及后台任务仍位于进程内，部署保持单 worker。进程重启后，未完成的摘要、记忆提取等后台任务需要后续请求重新触发。
+活动对话的 SSE 事件、取消任务注册表及后台任务位于进程内，部署保持单 worker。进程重启后，未完成的摘要、记忆提取等后台任务需要后续请求重新触发。
